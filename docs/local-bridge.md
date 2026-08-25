@@ -1,5 +1,7 @@
 # 电脑端本地加密桥
 
+> 这是默认的 Agent API 模式。手机不需要先启动工作流，也不需要活动 `runId`。
+
 电脑端的职责是把现有 Agent 使用的 2Captcha 请求在本机转换并加密。Hub 只转发密文，配对
 密钥只保存在电脑和 Android Keystore 中。
 
@@ -63,6 +65,10 @@ captchamesh config --json
 的本机进程时，才使用 `captchamesh config --json --show-secret`；不要记录或转发其输出。官方 `2captcha-python` 会固定
 使用 HTTPS，因此不能只把它的 `server` 改成 loopback；CaptchaMesh 提供的 `TwoCaptcha`
 适配器保留其调用方法，并把传输安全地限制在本机 HTTP。
+
+调用本机桥时，不要先在 App 的“工作流”页启动脚本。电脑端收到 API 请求后会直接加密发送，
+Android 后台服务收到后弹出提醒。`registrations.json`、`node_agent.py` 和 `runId` 只属于可选的
+[手机工作流模式](batch-integration.md#模式二手机工作流可选)。
 
 ## 生命周期
 

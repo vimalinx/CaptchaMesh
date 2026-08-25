@@ -53,7 +53,14 @@ solver = TwoCaptcha(
 
 ## 使用流程
 
-先在手机 CaptchaMesh 的“注册机”页启动一个注册机。注册机随后可以提交标准 v2 请求：
+### 默认：Agent API 模式
+
+Agent 将 v1/v2 请求发送到电脑本机 `http://127.0.0.1:8893`。本机桥直接加密并通知已配对
+Android，不需要 App 先启动工作流，也不需要 `runId`。这是普通 Agent 接入的推荐方式。
+
+### 可选：手机工作流模式
+
+先在手机 CaptchaMesh 的“工作流”页启动一个白名单脚本。该脚本随后可以向 Hub 提交标准 v2 请求：
 
 ```bash
 curl -sS https://mesh.example.com/createTask \
@@ -104,15 +111,15 @@ Turnstile 的 `solution` 为 `{"token":"TOKEN"}`。
 
 ## 运行绑定
 
-标准 2Captcha 请求没有 CaptchaMesh 的 `runId`。为了保持“手机手动选择一个注册机后才接题”
+以下绑定规则只用于手机工作流模式。标准 2Captcha 请求没有 CaptchaMesh 的 `runId`。为了保持“手机手动选择一个工作流后才接题”
 的产品约束，兼容层按以下顺序绑定：
 
 1. 请求顶层或 `task` 中存在扩展字段 `runId` 时，绑定该运行。
-2. 未提供时，自动绑定 Hub 中唯一一个活动注册运行。
+2. 未提供时，自动绑定 Hub 中唯一一个活动工作流运行。
 3. 没有活动运行，返回 `ERROR_NO_ACTIVE_RUN`。
 4. 同时存在多个活动运行，返回 `ERROR_AMBIGUOUS_RUN`，调用方必须显式传 `runId`。
 
-因此，从手机列表启动的普通单注册机流程不需要修改任务 JSON。并发运行多个注册机时才需要
+因此，从手机列表启动的普通单工作流不需要修改任务 JSON。并发运行多个工作流时才需要
 CaptchaMesh 扩展字段。
 
 ## 支持范围

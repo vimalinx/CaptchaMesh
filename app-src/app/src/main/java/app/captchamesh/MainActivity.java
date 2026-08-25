@@ -44,6 +44,7 @@ import com.google.android.material.button.MaterialButton;
 import com.google.android.material.chip.Chip;
 import com.google.android.material.chip.ChipGroup;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
+import com.google.android.material.switchmaterial.SwitchMaterial;
 import com.google.android.material.textfield.TextInputEditText;
 import com.google.android.material.textfield.TextInputLayout;
 
@@ -137,7 +138,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     private volatile String configuredBaseUrl = DEFAULT_BROKER;
     private volatile String configuredAuthorization = "";
     static volatile boolean foregroundVisible;
-    private int selectedPageId = R.id.nav_registrations;
+    private int selectedPageId = R.id.nav_task;
     private String pendingRegistrationId;
     private String pendingRegistrationName;
     private volatile int timelineStage;
@@ -148,7 +149,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     protected void onCreate(Bundle state) {
         super.onCreate(state);
         if (state != null) {
-            selectedPageId = state.getInt(STATE_SELECTED_PAGE, R.id.nav_registrations);
+            selectedPageId = state.getInt(STATE_SELECTED_PAGE, R.id.nav_task);
         }
         configureWindow();
         solver = new Solver(this, this);
@@ -256,7 +257,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         bottomNavigation.setBackground(
                 Tints.rounded(Tints.SURFACE_RAISED, 0, Tints.BORDER, dp(1)));
         bottomNavigation.setElevation(dp(4));
-        addNavigationItem(R.id.nav_registrations, R.drawable.ic_list, "注册机");
+        addNavigationItem(R.id.nav_registrations, R.drawable.ic_list, "工作流");
         addNavigationItem(R.id.nav_task, R.drawable.ic_shield, "任务");
         addNavigationItem(R.id.nav_diagnostics, R.drawable.ic_diagnostics, "自检");
         addNavigationItem(R.id.nav_log, R.drawable.ic_history, "记录");
@@ -308,8 +309,8 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
         LinearLayout labels = new LinearLayout(this);
         labels.setOrientation(LinearLayout.VERTICAL);
-        labels.addView(text("注册机", 22, Tints.TEXT, true));
-        registrationSummary = text("正在同步电脑端白名单", 12, Tints.TEXT_MUTED, false);
+        labels.addView(text("工作流", 22, Tints.TEXT, true));
+        registrationSummary = text("可选：从手机启动电脑端白名单脚本", 12, Tints.TEXT_MUTED, false);
         labels.addView(registrationSummary, row());
         heading.addView(labels, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
@@ -321,14 +322,14 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
         registrationList = new LinearLayout(this);
         registrationList.setOrientation(LinearLayout.VERTICAL);
-        registrationList.addView(emptyPanel("正在读取注册机", "请稍候，正在连接电脑端 Broker。"));
+        registrationList.addView(emptyPanel("正在读取工作流", "请稍候，正在连接电脑端节点。"));
         addTop(page, registrationList, 8);
         return scrollPage(page);
     }
 
     private View buildTaskPage() {
         LinearLayout page = pageContent();
-        page.addView(pageHeading("任务", "当前运行状态与手动 CAPTCHA"));
+        page.addView(pageHeading("Agent 任务", "电脑通过本机 API 自动发送，手机只负责人工验证"));
         addTop(page, buildRunCard(), 12);
         challengeCard = buildChallengeCard();
         challengeCard.setVisibility(View.GONE);
@@ -354,7 +355,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         String[] labels = {
                 "Broker 健康",
                 "API 鉴权",
-                "注册节点",
+                "工作流节点",
                 "通知与后台"
         };
         String[] details = {
@@ -395,7 +396,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         addTop(page, card, 12);
 
         TextView note = text(
-                "自检只发起只读健康请求和一次受限 CONNECT 探测；不会启动注册机或领取 CAPTCHA。",
+                "自检只发起只读健康请求和一次受限 CONNECT 探测；不会启动工作流或领取 CAPTCHA。",
                 11, Tints.TEXT_MUTED, false);
         note.setLineSpacing(dp(2), 1.08f);
         addTop(page, note, 14);
@@ -411,14 +412,46 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
     private View buildSettingsPage() {
         LinearLayout page = pageContent();
-        page.addView(pageHeading("设置", "配置电脑 Broker 与当前会话鉴权"));
+        page.addView(pageHeading("设置", "管理连接、配对与任务提醒"));
         addTop(page, buildConnectionCard(), 12);
+        addTop(page, buildNotificationCard(), 12);
         TextView privacy = text("API Key 与本机运行记录均加密保存在这台手机；Token 和 Cookie 不写入记录。",
                 11, Tints.TEXT_MUTED, false);
         privacy.setGravity(Gravity.CENTER);
         privacy.setLineSpacing(dp(2), 1.08f);
         addTop(page, privacy, 16);
         return scrollPage(page);
+    }
+
+    private LinearLayout buildNotificationCard() {
+        LinearLayout card = card();
+        card.addView(sectionHeader(
+                R.drawable.ic_notification,
+                text("任务提醒", 16, Tints.TEXT, true),
+                text("Agent API 与手机启动的工作流共用", 12, Tints.TEXT_MUTED, false)));
+
+        SwitchMaterial alerts = new SwitchMaterial(this);
+        alerts.setText("CAPTCHA 到达时显示提醒");
+        alerts.setTextColor(Tints.TEXT);
+        alerts.setTextSize(14);
+        alerts.setMinHeight(dp(48));
+        alerts.setChecked(NotificationPreferences.taskAlertsEnabled(this));
+        alerts.setOnCheckedChangeListener((button, enabled) ->
+                NotificationPreferences.setTaskAlertsEnabled(this, enabled));
+        addTop(card, alerts, 12);
+
+        TextView explanation = text(
+                "关闭后任务仍会安全到达，打开 App 即可处理。Android 要求后台连接保留一条低优先级状态通知。",
+                11, Tints.TEXT_MUTED, false);
+        explanation.setLineSpacing(dp(2), 1.08f);
+        addTop(card, explanation, 4);
+
+        MaterialButton systemNotifications = secondaryButton("系统通知设置", R.drawable.ic_settings);
+        systemNotifications.setOnClickListener(view -> startActivity(new Intent(
+                android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName())));
+        addTop(card, systemNotifications, 12);
+        return card;
     }
 
     private LinearLayout buildConnectionCard() {
@@ -480,7 +513,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
     private LinearLayout buildRunCard() {
         LinearLayout card = card();
-        TextView subtitle = text("电脑进程与手机验证任务", 12, Tints.TEXT_MUTED, false);
+        TextView subtitle = text("Agent API 与可选电脑工作流", 12, Tints.TEXT_MUTED, false);
         LinearLayout header = sectionHeader(
                 R.drawable.ic_activity,
                 text("当前运行", 16, Tints.TEXT, true),
@@ -489,7 +522,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         header.addView(runBadge, wrapEnd());
         card.addView(header);
 
-        runState = text("选择下方一个注册机开始", 15, Tints.TEXT_SECONDARY, false);
+        runState = text("等待已配对的电脑 Agent 通过 API 提交 CAPTCHA", 15, Tints.TEXT_SECONDARY, false);
         runState.setLineSpacing(dp(2), 1.08f);
         addTop(card, runState, 14);
 
@@ -499,18 +532,18 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 text("任务时间线", 16, Tints.TEXT, true),
                 text("从启动到交付，只保留一条清晰进度线", 12, Tints.TEXT_MUTED, false)), 16);
         String[] labels = {
-                "任务已启动",
-                "电脑准备环境",
-                "等待 CAPTCHA",
-                "人工验证回传",
-                "注册完成"
+                "电脑提交任务",
+                "加密发送到手机",
+                "等待人工处理",
+                "验证结果回传",
+                "Agent 继续运行"
         };
         String[] details = {
-                "等待你从注册机列表启动",
-                "浏览器和受控注册流程尚未开始",
+                "等待 Agent API 或你主动启动的工作流",
+                "端到端加密传输尚未开始",
                 "挑战尚未到达手机",
-                "等待你手动完成并回传",
-                "等待电脑保存最终交付"
+                "等待你手动完成并加密回传",
+                "等待电脑收到结果并恢复原任务"
         };
         for (int index = 0; index < labels.length; index++) {
             if (index == 0) {
@@ -612,7 +645,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
         String savedRecords = loadEncryptedPreference(
                 LOCAL_RECORDS_CIPHERTEXT, LOCAL_RECORDS_IV);
-        logView = text(savedRecords.isEmpty() ? "等待选择注册机" : savedRecords,
+        logView = text(savedRecords.isEmpty() ? "暂无任务记录" : savedRecords,
                 12, Tints.ACCENT, false);
         logView.setTypeface(Typeface.MONOSPACE);
         logView.setLineSpacing(dp(3), 1.05f);
@@ -646,7 +679,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                         "GeeTest v3/v4", "DataDome", "Amazon WAF"},
                 Tints.INFO, Tints.INFO_SOFT), 12);
         TextView note = text(
-                "仅接收你主动启动的任务；图片临时加载，Token 与 Cookie 不写入本机记录。",
+                "Agent API 任务会自动到达；工作流任务仅在你主动启动后接收。Token 与 Cookie 不写入记录。",
                 11, Tints.TEXT_MUTED, false);
         note.setLineSpacing(dp(2), 1.08f);
         addTop(card, note, 12);
@@ -725,16 +758,20 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                     publishDiagnostic(2, "正常", online + "/" + total + " 台节点在线，可启动白名单流程", 2);
                     passed++;
                 } else {
-                    publishDiagnostic(2, "失败", "没有在线注册节点；检查节点服务与 Key 重载", 0);
+                    publishDiagnostic(2, "失败", "没有在线工作流节点；检查节点服务与 Key 重载", 0);
                 }
             }
 
             boolean notifications = NotificationManagerCompat.from(this).areNotificationsEnabled();
+            boolean taskAlerts = NotificationPreferences.taskAlertsEnabled(this);
             PowerManager power = getSystemService(PowerManager.class);
             boolean unrestricted = power != null
                     && power.isIgnoringBatteryOptimizations(getPackageName());
             if (!notifications) {
                 publishDiagnostic(3, "失败", "通知权限未开启，后台到题时无法提醒", 0);
+            } else if (!taskAlerts) {
+                publishDiagnostic(3, "需关注", "任务到达提醒已在 App 设置中关闭", 1);
+                warnings++;
             } else if (!unrestricted) {
                 publishDiagnostic(3, "需关注", "通知已开启；系统电池优化可能延迟后台提醒", 1);
                 warnings++;
@@ -786,7 +823,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         brokerField.setError(null);
         refreshButton.setEnabled(false);
         refreshButton.setText("读取中");
-        registrationSummary.setText("正在同步电脑端白名单");
+        registrationSummary.setText("正在同步电脑端白名单工作流");
         executor.submit(() -> {
             try {
                 JSONObject response = new JSONObject(
@@ -835,7 +872,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 R.string.registration_count, registrations.length(), enabledCount));
         if (registrations.length() == 0) {
             registrationList.addView(emptyPanel(
-                    "电脑端还没有注册机",
+                    "电脑端还没有工作流",
                     "先在 registrations.json 中登记允许启动的脚本。"));
         }
     }
@@ -960,10 +997,11 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
     private void startRegistration(String registrationId, String name) {
         if (active) {
-            Toast.makeText(this, "当前已有注册机在运行", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "当前已有工作流在运行", Toast.LENGTH_SHORT).show();
             return;
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && NotificationPreferences.taskAlertsEnabled(this)
                 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
             pendingRegistrationId = registrationId;
@@ -1152,7 +1190,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         String runId = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
                 .getString(CaptchaWatchService.PREF_ACTIVE_RUN_ID, "");
         String name = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
-                .getString(CaptchaWatchService.PREF_ACTIVE_RUN_NAME, "注册任务");
+                .getString(CaptchaWatchService.PREF_ACTIVE_RUN_NAME, "电脑工作流");
         if (runId.isEmpty()) return;
         active = true;
         activeRunId = runId;
@@ -1530,7 +1568,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 .remove(LOCAL_RECORDS_CIPHERTEXT)
                 .remove(LOCAL_RECORDS_IV)
                 .apply();
-        logView.setText("等待选择注册机");
+        logView.setText("暂无任务记录");
         Toast.makeText(this, "本机记录已清空", Toast.LENGTH_SHORT).show();
     }
 
@@ -2002,6 +2040,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
     private void startRelayNotifications() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+                && NotificationPreferences.taskAlertsEnabled(this)
                 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 != PackageManager.PERMISSION_GRANTED) {
             pendingRelayPermission = true;

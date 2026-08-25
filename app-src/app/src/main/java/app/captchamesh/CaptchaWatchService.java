@@ -85,7 +85,7 @@ public final class CaptchaWatchService extends Service {
                 stopSelf();
                 return START_NOT_STICKY;
             }
-            if (name == null || name.isEmpty()) name = "注册任务";
+            if (name == null || name.isEmpty()) name = "电脑工作流";
             watchedRunId = runId;
             stopped = true;
             getSystemService(NotificationManager.class).cancel(CHALLENGE_NOTIFICATION_ID);
@@ -100,7 +100,7 @@ public final class CaptchaWatchService extends Service {
             stopSelf();
             return START_NOT_STICKY;
         }
-        if (name == null || name.isEmpty()) name = "注册任务";
+        if (name == null || name.isEmpty()) name = "电脑工作流";
         watchedRunId = runId;
         stopped = false;
         startForeground(WAITING_NOTIFICATION_ID, waitingNotification(
@@ -157,6 +157,7 @@ public final class CaptchaWatchService extends Service {
     }
 
     private void notifyChallenge(String runId, String name) {
+        if (!NotificationPreferences.taskAlertsEnabled(this)) return;
         NotificationManager manager = getSystemService(NotificationManager.class);
         manager.notify(CHALLENGE_NOTIFICATION_ID, new NotificationCompat.Builder(this, CHALLENGE_CHANNEL)
                 .setSmallIcon(R.drawable.ic_notification)
@@ -227,7 +228,7 @@ public final class CaptchaWatchService extends Service {
             updateWaiting(name, "停止请求已忽略：当前任务已经变化");
             stopped = false;
             executor.submit(() -> watch(storedRunId,
-                    preferences.getString(PREF_ACTIVE_RUN_NAME, "注册任务")));
+                    preferences.getString(PREF_ACTIVE_RUN_NAME, "电脑工作流")));
             return;
         }
         try {
@@ -273,8 +274,8 @@ public final class CaptchaWatchService extends Service {
     private void createChannels() {
         NotificationManager manager = getSystemService(NotificationManager.class);
         NotificationChannel waiting = new NotificationChannel(
-                WAITING_CHANNEL, "注册任务后台等待", NotificationManager.IMPORTANCE_LOW);
-        waiting.setDescription("显示你主动启动的注册任务正在等待 CAPTCHA");
+                WAITING_CHANNEL, "工作流后台运行", NotificationManager.IMPORTANCE_LOW);
+        waiting.setDescription("显示你主动启动的电脑工作流正在等待 CAPTCHA");
         waiting.setShowBadge(false);
         manager.createNotificationChannel(waiting);
 

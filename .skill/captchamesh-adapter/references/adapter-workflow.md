@@ -1,54 +1,48 @@
-# 注册机改造与验证
+# 模式适配与验证
 
-## Python 官方 2Captcha SDK（v1）
+## Agent API 模式
 
-保留调用 `recaptcha()`、`hcaptcha()`、`turnstile()` 和 `get_result()` 的业务代码，仅把 key 与 server 配成 CaptchaMesh：
+这是默认模式。先运行 `captchamesh start` 并扫码配对。
+
+Python 项目优先使用 CaptchaMesh 适配器：
 
 ```python
-import os
-from twocaptcha import TwoCaptcha
+from captchamesh import TwoCaptcha
 
-solver = TwoCaptcha(
-    os.environ["CAPTCHAMESH_API_KEY"],
-    server=os.environ.get("CAPTCHAMESH_SERVER", "mesh.vimalinx.com"),
-)
+solver = TwoCaptcha()
 ```
 
-该 SDK 的 `server` 是主机名，不要填 `https://` 或路径。若项目封装层不暴露 `server`，在 provider 构造器中增加配置，不要修改 sitekey 或目标站 URL。
+官方 `2captcha-python` 会固定 HTTPS，不能只把 `server` 改为 loopback。其他 v1/v2 客户端把
+base URL 改为 `http://127.0.0.1:8893`，Key 从 `captchamesh config --json` 指向的受限文件读取。
+保持 `in.php`/`res.php` 或 `createTask`/`getTaskResult` 的解析逻辑不变。
 
-## v1 原始 HTTP
+此模式没有活动工作流、Node Agent 或 `runId`。验证时直接创建一个任务，确认 Android 后台
+自动提醒、人工完成并将结果返回原调用方。
 
-把原 `https://2captcha.com/in.php` 和 `/res.php` 的 host 改为 `CAPTCHAMESH_SERVER` 配置的 Hub，保持表单参数、`OK|...` 解析和 `CAPCHA_NOT_READY` 轮询逻辑不变。轮询间隔建议 2–5 秒，总超时 180 秒以上。
+## 手机工作流模式
 
-## v2 JSON
+只有用户要求从手机启动电脑脚本时使用。将固定命令加入 `registrations.json`，启动 Node
+Agent，并让脚本读取 `CAPTCHAMESH_URL`、`CAPTCHAMESH_API_KEY` 和
+`CAPTCHAMESH_RUN_ID`。不要在配置中硬编码这些值。
 
-把 API base URL 改为已配置的 CaptchaMesh Hub，`clientKey` 从环境读取。创建后保存数字 `taskId`，轮询 `getTaskResult`，只在 `status=ready` 时提取 solution。不要把 HTTP 200 当作成功；先检查 `errorId`。
-
-## 自动绑定与并发
-
-正常人工用法：先在 App 注册机列表选一个并点击开始，再让电脑脚本提交 CAPTCHA。此时 SDK 无需认识 CaptchaMesh run。
-
-若必须并发多个注册机：
-
-- v2 在请求顶层或 task 中增加 `runId`。
-- v1 增加非标准表单字段 `runId`（也接受 `run_id`）。
-- 不要靠任务创建顺序猜绑定关系。
+单个活动工作流可以省略 `runId`；并发时 v2 在顶层或 task 中传 `runId`，v1 传 `runId` 或
+`run_id`。不要根据任务顺序猜绑定关系。
 
 ## 验证顺序
 
-1. 运行 `inspect_registration.py`，确认协议类型、题型及残留主机。
-2. 执行注册机自身单元测试；若没有测试，至少覆盖请求构造和 token 解析。
-3. 对 Hub 做无副作用检查：v1/v2 balance、错误 key、错误 ID、不支持题型。部署前后各检查一次健康状态。
-4. App 只启动一个注册机，用一个真实任务做端到端验证。记录 task ID、状态变化与最终注册结果，日志不记录 token。
-5. 若目标站拒绝 token，先核对 sitekey、页面 URL、action、UA、cookie、代理出口和 token 时效；不要连续让人重做验证码。
+1. 运行 `inspect_registration.py --mode <模式>`，确认协议、题型和残留主机。
+2. 执行目标程序自身测试，至少覆盖请求构造、未就绪、错误和结果解析。
+3. 检查 CaptchaMesh 健康状态、错误 Key、错误 ID 和不支持题型。
+4. Agent API 模式在没有活动工作流时完成一次任务；手机工作流模式只启动一个白名单项目完成一次任务。
+5. 目标站拒绝结果时核对 sitekey、页面 URL、action、UA、Cookie、代理出口和时效。
 
-## 常见失败定位
+## 常见失败
 
 | 现象 | 优先检查 |
 |---|---|
-| `ERROR_NO_ACTIVE_RUN` | App 是否先启动注册机，节点是否在线 |
-| `ERROR_AMBIGUOUS_RUN` | 是否有多个活动 run；补 `runId` |
-| `CAPCHA_NOT_READY` 一直不变 | 手机是否取到任务，网页是否正确加载，worker lease 是否过期 |
-| 手机完成但目标站仍拒绝 | sitekey/URL/action 与浏览器上下文是否一致，token 是否被重复使用或过期 |
-| `ERROR_TASK_NOT_SUPPORTED` | 题型或 Enterprise/data-s/代理能力不在手机范围 |
-| 409 | 先看错误码；通常是 run 生命周期或上下文冲突，不要靠重复过验证码解决 |
+| Agent API 没有手机提醒 | `captchamesh start`、扫码配对、Android 通知设置、本机 `127.0.0.1:8893` |
+| `ERROR_NO_ACTIVE_RUN` | 当前是否错误使用 Hub 工作流接口；工作流是否由用户启动 |
+| `ERROR_AMBIGUOUS_RUN` | 是否有多个活动工作流；补 `runId` |
+| `CAPCHA_NOT_READY` 一直不变 | 手机是否收到任务、挑战是否加载、租约是否过期 |
+| 手机完成但目标站拒绝 | 浏览器上下文、出口和 token 时效是否一致 |
+| `ERROR_TASK_NOT_SUPPORTED` | 题型或上下文能力是否在支持矩阵 |

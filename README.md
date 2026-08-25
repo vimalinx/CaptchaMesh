@@ -12,23 +12,40 @@ CaptchaMesh 是一个面向个人、低频工作流的开源人工接管工具�
 将挑战端到端加密后交给 Android；你在手机上手动完成，结果回到原任务，Agent 继续运行。
 
 > CaptchaMesh 不自动识别或绕过 CAPTCHA，不提供任务市场、后台抢单、批量注册或任意远程命令。
-> 手机和 Hub 只能选择电脑预先登记的工作流，不能下发命令、路径或临时参数。
+> 可选的手机工作流只能启动电脑预先登记的固定 ID；Hub 不能下发命令、路径或临时参数。
 
 ```mermaid
 flowchart LR
-    A[Agent / 脚本] --> B[127.0.0.1 本地桥]
-    B -->|AES-256-GCM 密文| C[不可信 Hub]
-    C -->|密文| D[Android 通知]
-    D --> E[用户手动完成]
-    E -->|加密结果| C --> B --> A
+    A[模式一：电脑 Agent] -->|2Captcha API| B[127.0.0.1 本地桥]
+    P[模式二：手机点工作流] -->|固定白名单 ID| N[电脑 Node Agent]
+    N --> A
+    B -->|端到端密文| H[不可信 Hub]
+    H -->|密文| P
+    P --> U[用户手动完成]
+    U -->|加密结果| H --> B --> A
 ```
 
-## 三分钟开始
+## 两种使用方式
+
+| 模式 | 谁先启动 | 是否需要手机点工作流 | 用途 |
+|---|---|---:|---|
+| **Agent API（默认）** | 电脑 Agent | 否 | 已有 Agent 遇到 CAPTCHA 后自动通知手机 |
+| **手机工作流（可选）** | 手机用户 | 是 | 从手机启动电脑预先登记的固定脚本，再等待它提交 CAPTCHA |
+
+默认模式只需运行 `captchamesh start` 并完成一次扫码配对。Agent 调用
+`http://127.0.0.1:8893` 后，任务会自动到达手机；手机“工作流”页与活动 run 都不是前置条件。
+
+只有需要“从手机启动电脑脚本”时，才配置 `registrations.json` 和 `node_agent.py`。工作流可以
+执行自己的正常业务逻辑，但 CaptchaMesh 仍只负责启动、状态和人工 CAPTCHA 回传。
+
+## 三分钟开始：Agent API 模式
 
 ### 1. 安装 Android App
 
 从 [Releases](https://github.com/vimalinx/CaptchaMesh/releases) 下载最新 APK。Android 需要
 Android 10（API 29）或更高版本。首次启动时允许通知和前台服务权限。
+App 的“设置 → 任务提醒”同时控制两种模式的 CAPTCHA 到达弹窗；系统声音、震动和通知渠道可从
+同页进入 Android 设置调整。
 
 ### 2. 安装电脑端
 
@@ -132,14 +149,17 @@ adb reverse tcp:8890 tcp:8890
 日常使用不需要 ADB；推荐使用电脑端生成的一次性二维码。详见
 [Android 安装与连接](docs/phone-deploy.md)。
 
-## 可选：从手机启动固定工作流
+## 可选：手机工作流模式
 
 ```bash
 cp registrations.example.json registrations.json
 ```
 
 只在本机 `registrations.json` 中登记固定的 `cwd` 和命令数组。该文件不会进入 Git；手机只能
-选择登记过的 `id`。协议和失败语义见 [节点协议](docs/node-protocol.md)。
+选择登记过的 `id`。启动 `node_agent.py` 后，手机“工作流”页可以启动、查看和停止这些脚本。
+脚本遇到 CAPTCHA 时复用同一个手机人工验证界面。接入方式见
+[两种模式与工作流接入](docs/batch-integration.md)，协议和失败语义见
+[工作流节点协议](docs/node-protocol.md)。
 
 ## 平台支持
 
@@ -180,7 +200,8 @@ Ubuntu/systemd 模板和上线检查见 [Hub 部署说明](deploy/hub/README.md)
 | [端到端加密中继](docs/e2ee-relay.md) | 信任模型、密钥和 Hub 可见信息 |
 | [挑战协议 v3](docs/challenge-protocol-v3.md) | 任务字段和类型化结果 |
 | [2Captcha 兼容层](docs/twocaptcha-v2-compat.md) | v1/v2 端点与题型矩阵 |
-| [节点协议](docs/node-protocol.md) | 本机白名单工作流 |
+| [两种模式与工作流接入](docs/batch-integration.md) | 默认 Agent API 与可选手机工作流的选择和接入 |
+| [工作流节点协议](docs/node-protocol.md) | 本机白名单工作流 |
 
 ## 项目结构
 
@@ -196,4 +217,4 @@ Ubuntu/systemd 模板和上线检查见 [Hub 部署说明](deploy/hub/README.md)
 | `.skill/captchamesh-adapter/` | Agent 接入 Skill |
 | `deploy/hub/` | 自托管 Hub 配置 |
 
-欢迎阅读 [贡献指南](CONTRIBUTING.md)。当前版本为 `0.18.2`，采用 [MIT License](LICENSE)。
+欢迎阅读 [贡献指南](CONTRIBUTING.md)。当前版本为 `0.18.3`，采用 [MIT License](LICENSE)。

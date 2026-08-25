@@ -115,6 +115,7 @@ public final class RelayWatchService extends Service {
     }
 
     private void notifyReady() {
+        if (!NotificationPreferences.taskAlertsEnabled(this)) return;
         getSystemService(NotificationManager.class).notify(CHALLENGE_ID,
                 new NotificationCompat.Builder(this, CHALLENGE_CHANNEL)
                         .setSmallIcon(R.drawable.ic_notification)

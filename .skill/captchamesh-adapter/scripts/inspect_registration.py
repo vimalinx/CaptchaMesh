@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Inspect registration sources for 2Captcha/CaptchaMesh integration signals.
+"""Inspect Agent or workflow sources for 2Captcha/CaptchaMesh integration signals.
 
 The report contains paths, line numbers and classified signals only. It never
 echoes source lines, environment values, API keys, cookies or CAPTCHA tokens.
@@ -70,7 +70,7 @@ def candidate_files(targets: list[Path]):
             yield path
 
 
-def inspect(targets: list[Path]) -> dict[str, object]:
+def inspect(targets: list[Path], mode: str = "agent-api") -> dict[str, object]:
     findings: list[dict[str, object]] = []
     kinds: set[str] = set()
     supported: set[str] = set()
@@ -107,20 +107,29 @@ def inspect(targets: list[Path]) -> dict[str, object]:
         protocols.append("captchamesh")
 
     actions: list[str] = []
-    if "python_2captcha_sdk" in kinds:
-        actions.append("Use the configured CaptchaMesh endpoint and load the key from CAPTCHAMESH_API_KEY.")
-    elif "2captcha_v1" in protocols:
-        actions.append("Replace the active v1 API host with the configured CaptchaMesh endpoint; preserve in.php/res.php parsing.")
-    if "2captcha_v2" in protocols:
-        actions.append("Replace the active v2 API base URL with the configured CaptchaMesh endpoint and preserve JSON error handling.")
+    if mode == "agent-api":
+        if "python_2captcha_sdk" in kinds:
+            actions.append("Use captchamesh.TwoCaptcha or a loopback-capable client at http://127.0.0.1:8893.")
+        elif "2captcha_v1" in protocols:
+            actions.append("Replace the active v1 host with http://127.0.0.1:8893; preserve in.php/res.php parsing.")
+        if "2captcha_v2" in protocols:
+            actions.append("Replace the active v2 base URL with http://127.0.0.1:8893 and preserve JSON error handling.")
+        if protocols and not unsupported:
+            actions.append("Run captchamesh start, pair once, and test without starting an App workflow or passing runId.")
+    else:
+        actions.append("Read the endpoint, key and runId injected by Node Agent; do not hardcode them.")
+        if "2captcha_v1" in protocols:
+            actions.append("Preserve in.php/res.php parsing and pass the injected runId when workflows can overlap.")
+        if "2captcha_v2" in protocols:
+            actions.append("Preserve v2 JSON error handling and pass the injected runId when workflows can overlap.")
+        if protocols and not unsupported:
+            actions.append("Register one fixed command, start it from the App Workflows page, then test one task.")
     if "hardcoded_2captcha_host" in kinds:
         actions.append("Remove or make configurable every active 2captcha.com host before verification.")
     if unsupported:
         actions.append("Stop: unsupported transport or browser-context signals require an explicit design decision; do not enqueue them to the phone.")
-    if protocols and not unsupported:
-        actions.append("Start exactly one registration in the App, then run one end-to-end CAPTCHA task.")
-
     return {
+        "integration_mode": mode,
         "scanned_files": scanned,
         "protocols": protocols,
         "supported_task_signals": sorted(supported),
@@ -134,12 +143,18 @@ def inspect(targets: list[Path]) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("targets", nargs="+", type=Path)
+    parser.add_argument(
+        "--mode",
+        choices=("agent-api", "phone-workflow"),
+        default="agent-api",
+        help="integration direction; defaults to the local Agent API",
+    )
     parser.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     args = parser.parse_args()
     missing = [str(path) for path in args.targets if not path.exists()]
     if missing:
         parser.error("not found: " + ", ".join(missing))
-    report = inspect(args.targets)
+    report = inspect(args.targets, args.mode)
     if args.json:
         print(json.dumps(report, ensure_ascii=False, indent=2))
     else:

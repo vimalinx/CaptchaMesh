@@ -13,12 +13,14 @@ INSPECTOR = PROJECT_ROOT / ".skill/captchamesh-adapter/scripts/inspect_registrat
 
 
 class AdapterSkillInspectorTest(unittest.TestCase):
-    def run_inspector(self, source: str) -> tuple[subprocess.CompletedProcess[str], dict]:
+    def run_inspector(
+        self, source: str, mode: str = "agent-api"
+    ) -> tuple[subprocess.CompletedProcess[str], dict]:
         with tempfile.TemporaryDirectory() as directory:
             fixture = Path(directory) / "register.py"
             fixture.write_text(source, encoding="utf-8")
             result = subprocess.run(
-                [sys.executable, str(INSPECTOR), str(fixture), "--json"],
+                [sys.executable, str(INSPECTOR), str(fixture), "--mode", mode, "--json"],
                 check=False,
                 capture_output=True,
                 text=True,
@@ -35,6 +37,9 @@ class AdapterSkillInspectorTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("2captcha_v1", report["protocols"])
         self.assertIn("turnstile", report["supported_task_signals"])
+        self.assertEqual(report["integration_mode"], "agent-api")
+        self.assertTrue(any("127.0.0.1:8893" in action for action in report["recommended_actions"]))
+        self.assertTrue(any("without starting" in action for action in report["recommended_actions"]))
         self.assertTrue(report["ready_for_supported_adapter"])
         self.assertNotIn(secret, result.stdout)
 
@@ -57,6 +62,17 @@ class AdapterSkillInspectorTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("callback_or_pingback", report["unsupported_capability_signals"])
         self.assertFalse(report["ready_for_supported_adapter"])
+
+    def test_phone_workflow_mode_requires_injected_run_context(self) -> None:
+        result, report = self.run_inspector(
+            "endpoint = base + '/createTask'\n"
+            "task = {'type': 'TurnstileTaskProxyless'}\n",
+            mode="phone-workflow",
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(report["integration_mode"], "phone-workflow")
+        self.assertTrue(any("injected" in action for action in report["recommended_actions"]))
+        self.assertTrue(any("Workflows page" in action for action in report["recommended_actions"]))
 
 
 if __name__ == "__main__":

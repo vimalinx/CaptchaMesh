@@ -6,6 +6,8 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 ACTIVITY = ROOT / "app-src/app/src/main/java/app/captchamesh/MainActivity.java"
 WATCH_SERVICE = ROOT / "app-src/app/src/main/java/app/captchamesh/CaptchaWatchService.java"
+RELAY_SERVICE = ROOT / "app-src/app/src/main/java/app/captchamesh/RelayWatchService.java"
+NOTIFICATION_PREFERENCES = ROOT / "app-src/app/src/main/java/app/captchamesh/NotificationPreferences.java"
 MANIFEST = ROOT / "app-src/app/src/main/AndroidManifest.xml"
 BUILD = ROOT / "app-src/app/build.gradle.kts"
 LAUNCHER = ROOT / "app-src/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml"
@@ -18,6 +20,8 @@ class AndroidUiContractTest(unittest.TestCase):
     def setUpClass(cls):
         cls.activity = ACTIVITY.read_text(encoding="utf-8")
         cls.watch_service = WATCH_SERVICE.read_text(encoding="utf-8")
+        cls.relay_service = RELAY_SERVICE.read_text(encoding="utf-8")
+        cls.notification_preferences = NOTIFICATION_PREFERENCES.read_text(encoding="utf-8")
         cls.manifest = MANIFEST.read_text(encoding="utf-8")
         cls.build = BUILD.read_text(encoding="utf-8")
 
@@ -81,6 +85,23 @@ class AndroidUiContractTest(unittest.TestCase):
         for status in ("完成", "进行中", "等待", "未执行"):
             self.assertIn(f'"{status}"', self.activity)
 
+    def test_agent_tasks_are_default_and_workflows_are_optional(self):
+        self.assertIn("private int selectedPageId = R.id.nav_task;", self.activity)
+        self.assertIn('R.id.nav_registrations, R.drawable.ic_list, "工作流"', self.activity)
+        self.assertIn('pageHeading("Agent 任务"', self.activity)
+        self.assertIn("电脑通过本机 API 自动发送", self.activity)
+        self.assertIn("可选：从手机启动电脑端白名单脚本", self.activity)
+        self.assertNotIn('"注册机"', self.activity)
+
+    def test_task_alert_setting_controls_both_modes(self):
+        self.assertIn("CAPTCHA 到达时显示提醒", self.activity)
+        self.assertIn("ACTION_APP_NOTIFICATION_SETTINGS", self.activity)
+        self.assertIn("taskAlertsEnabled", self.watch_service)
+        self.assertIn("taskAlertsEnabled", self.relay_service)
+        self.assertIn('TASK_ALERTS = "notify_task_alerts"', self.notification_preferences)
+        self.assertIn("manager.cancel(WORKFLOW_CHALLENGE_ID)", self.notification_preferences)
+        self.assertIn("manager.cancel(AGENT_CHALLENGE_ID)", self.notification_preferences)
+
     def test_status_lists_use_flat_rows_instead_of_nested_cards(self):
         for method_name in ("timelineRow", "diagnosticRow"):
             method = re.search(
@@ -93,9 +114,9 @@ class AndroidUiContractTest(unittest.TestCase):
         self.assertNotIn("buildTimelineCard()", self.activity)
         self.assertIn("sectionDivider(dp(44))", self.activity)
 
-    def test_release_version_is_0182(self):
-        self.assertIn("versionCode = 20", self.build)
-        self.assertIn('versionName = "0.18.2"', self.build)
+    def test_release_version_is_0183(self):
+        self.assertIn("versionCode = 21", self.build)
+        self.assertIn('versionName = "0.18.3"', self.build)
 
     def test_launcher_icon_uses_safe_artwork_and_themed_monochrome_mark(self):
         launcher = LAUNCHER.read_text(encoding="utf-8")
