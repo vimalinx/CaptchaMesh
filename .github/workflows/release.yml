@@ -30,7 +30,7 @@ jobs:
       - name: Prepare release files
         run: |
           cp app-src/app/build/outputs/apk/debug/app-debug.apk "dist/captchamesh-${GITHUB_REF_NAME}-debug.apk"
-          sha256sum dist/* > dist/SHA256SUMS
+          (cd dist && sha256sum *.whl *.tar.gz *.apk) > dist/SHA256SUMS
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

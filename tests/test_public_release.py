@@ -42,6 +42,14 @@ class PublicReleaseBoundaryTest(unittest.TestCase):
                 any("private member" in problem for problem in verify(dist))
             )
 
+    def test_release_checksums_use_downloadable_basenames(self) -> None:
+        workflow = Path(".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn(
+            "(cd dist && sha256sum *.whl *.tar.gz *.apk) > dist/SHA256SUMS",
+            workflow,
+        )
+        self.assertNotIn("sha256sum dist/*", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
