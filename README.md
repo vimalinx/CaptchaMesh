@@ -196,4 +196,4 @@ Ubuntu/systemd 模板和上线检查见 [Hub 部署说明](deploy/hub/README.md)
 | `.skill/captchamesh-adapter/` | Agent 接入 Skill |
 | `deploy/hub/` | 自托管 Hub 配置 |
 
-欢迎阅读 [贡献指南](CONTRIBUTING.md)。当前版本为 `0.18.1`，采用 [MIT License](LICENSE)。
+欢迎阅读 [贡献指南](CONTRIBUTING.md)。当前版本为 `0.18.2`，采用 [MIT License](LICENSE)。

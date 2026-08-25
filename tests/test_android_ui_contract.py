@@ -8,6 +8,9 @@ ACTIVITY = ROOT / "app-src/app/src/main/java/app/captchamesh/MainActivity.java"
 WATCH_SERVICE = ROOT / "app-src/app/src/main/java/app/captchamesh/CaptchaWatchService.java"
 MANIFEST = ROOT / "app-src/app/src/main/AndroidManifest.xml"
 BUILD = ROOT / "app-src/app/build.gradle.kts"
+LAUNCHER = ROOT / "app-src/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml"
+LAUNCHER_FOREGROUND = ROOT / "app-src/app/src/main/res/drawable/ic_launcher_fg.xml"
+LAUNCHER_ART = ROOT / "app-src/app/src/main/res/drawable-nodpi/ic_launcher_art.png"
 
 
 class AndroidUiContractTest(unittest.TestCase):
@@ -90,9 +93,20 @@ class AndroidUiContractTest(unittest.TestCase):
         self.assertNotIn("buildTimelineCard()", self.activity)
         self.assertIn("sectionDivider(dp(44))", self.activity)
 
-    def test_release_version_is_0181(self):
-        self.assertIn("versionCode = 19", self.build)
-        self.assertIn('versionName = "0.18.1"', self.build)
+    def test_release_version_is_0182(self):
+        self.assertIn("versionCode = 20", self.build)
+        self.assertIn('versionName = "0.18.2"', self.build)
+
+    def test_launcher_icon_uses_safe_artwork_and_themed_monochrome_mark(self):
+        launcher = LAUNCHER.read_text(encoding="utf-8")
+        foreground = LAUNCHER_FOREGROUND.read_text(encoding="utf-8")
+        self.assertIn('@drawable/ic_launcher_art', launcher)
+        self.assertIn('@drawable/ic_launcher_fg', launcher)
+        self.assertNotIn('M0,0h108v108', foreground)
+        self.assertIn('M54,31 L74,41', foreground)
+        self.assertTrue(LAUNCHER_ART.is_file())
+        self.assertGreater(LAUNCHER_ART.stat().st_size, 10_000)
+        self.assertIn('android:roundIcon="@mipmap/ic_launcher"', self.manifest)
 
     def test_e2ee_pairing_uses_keystore_and_generic_background_notifications(self):
         relay_store = (ACTIVITY.parent / "RelayStore.java").read_text(encoding="utf-8")

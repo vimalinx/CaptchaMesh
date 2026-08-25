@@ -10,6 +10,7 @@
     <application
         android:label="CaptchaMesh"
         android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:theme="@style/Theme.App"
         android:networkSecurityConfig="@xml/network_security"
         android:usesCleartextTraffic="false">
