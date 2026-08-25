@@ -7,12 +7,12 @@
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python -m unittest discover -s tests -v
-
-cd app-src
-./gradlew --no-daemon :app:testDebugUnitTest :app:lintDebug :app:assembleDebug
+.venv/bin/python -m pip install -r requirements.txt build bandit pip-audit
+./tools/test_all.sh
 ```
+
+发布、安全、网络或密钥处理相关改动还应安装 Gitleaks 并运行 `./tools/test_all.sh --security`。
+真机配对、通知和 Hub 验收步骤见 [完整测试指南](docs/testing.md)。
 
 提交中不要包含 `.secrets/`、`.ai/`、`registrations.json`、数据库、APK、构建缓存、账号数据或
 真实服务凭据。文档示例使用 `example.com`、占位 Key 和通用路径。

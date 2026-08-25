@@ -90,9 +90,9 @@ class AndroidUiContractTest(unittest.TestCase):
         self.assertNotIn("buildTimelineCard()", self.activity)
         self.assertIn("sectionDivider(dp(44))", self.activity)
 
-    def test_release_version_is_018(self):
-        self.assertIn("versionCode = 18", self.build)
-        self.assertIn('versionName = "0.18"', self.build)
+    def test_release_version_is_0181(self):
+        self.assertIn("versionCode = 19", self.build)
+        self.assertIn('versionName = "0.18.1"', self.build)
 
     def test_e2ee_pairing_uses_keystore_and_generic_background_notifications(self):
         relay_store = (ACTIVITY.parent / "RelayStore.java").read_text(encoding="utf-8")

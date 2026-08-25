@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "captchamesh"
-version = "0.18.0"
+version = "0.18.1"
 description = "Personal, endpoint-encrypted CAPTCHA handoff between an Agent and Android"
 readme = "README.md"
 requires-python = ">=3.11"
