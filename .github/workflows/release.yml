@@ -23,13 +23,37 @@ jobs:
       - uses: gradle/actions/wrapper-validation@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
       - run: python -m pip install --disable-pip-version-check build
+      - name: Verify release metadata and signing configuration
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          python tools/verify_release_metadata.py "$GITHUB_REF_NAME"
+          test -n "$ANDROID_KEYSTORE_BASE64"
+          test -n "$ANDROID_KEYSTORE_PASSWORD"
+          test -n "$ANDROID_KEY_ALIAS"
+          test -n "$ANDROID_KEY_PASSWORD"
       - run: python -m build
       - run: python tools/verify_public_release.py dist
+      - run: python tools/build_hub_bundle.py --output dist
+      - name: Decode Android release keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/captchamesh-release.jks"
+          chmod 0600 "$RUNNER_TEMP/captchamesh-release.jks"
       - working-directory: app-src
-        run: ./gradlew --no-daemon :app:assembleDebug
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/captchamesh-release.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon :app:assembleRelease
       - name: Prepare release files
         run: |
-          cp app-src/app/build/outputs/apk/debug/app-debug.apk "dist/captchamesh-${GITHUB_REF_NAME}-debug.apk"
+          cp app-src/app/build/outputs/apk/release/app-release.apk "dist/captchamesh-${GITHUB_REF_NAME}.apk"
           (cd dist && sha256sum *.whl *.tar.gz *.apk) > dist/SHA256SUMS
       - name: Create GitHub release
         env:

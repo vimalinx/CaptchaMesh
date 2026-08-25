@@ -32,7 +32,7 @@ jobs:
           cache: pip
       - run: python -m pip install --disable-pip-version-check -r requirements.txt bandit pip-audit
       - run: bandit -q -r . -x ./.venv,./tests,./app-src
-      - run: pip-audit -r requirements.txt
+      - run: pip-audit --vulnerability-service osv -r requirements.txt
 
   android:
     runs-on: ubuntu-latest
@@ -62,5 +62,7 @@ jobs:
       - run: python -m pip install --disable-pip-version-check build
       - run: python -m build
       - run: python tools/verify_public_release.py dist
+      - run: python tools/build_hub_bundle.py --output dist
+      - run: bash -n deploy/hub/install.sh
       - run: python -m pip install --force-reinstall dist/*.whl
       - run: captchamesh --help

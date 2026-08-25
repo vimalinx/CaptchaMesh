@@ -47,6 +47,9 @@ Android 10（API 29）或更高版本。首次启动时允许通知和前台服�
 App 的“设置 → 任务提醒”同时控制两种模式的 CAPTCHA 到达弹窗；系统声音、震动和通知渠道可从
 同页进入 Android 设置调整。
 
+从 `0.18.x` 测试版升级到 `0.19.0` 时，需要先卸载旧的 debug 签名 APK，再安装正式 APK 并
+重新扫码配对。这是一次性的签名迁移；从 `0.19.0` 开始使用固定发布证书，后续版本可以直接覆盖升级。
+
 ### 2. 安装电脑端
 
 电脑端当前正式支持 Linux，需要 Python 3.11+：
@@ -175,8 +178,16 @@ cp registrations.example.json registrations.json
 ## 自托管 Hub
 
 Hub 应只监听 `127.0.0.1`，再通过 HTTPS 反向隧道暴露；不要把 8890 直接开放到公网。
-Ubuntu/systemd 模板和上线检查见 [Hub 部署说明](deploy/hub/README.md)。公益 Hub 无法解密任务
-正文，但仍能看到邮箱 ID、方向、时间和密文大小等路由元数据。
+从 [Releases](https://github.com/vimalinx/CaptchaMesh/releases) 下载独立 Hub 包后，在 Ubuntu 或
+Debian 服务器运行下面一条命令；安装器会提示输入域名和 Cloudflare Tunnel token：
+
+```bash
+sudo ./deploy/hub/install.sh --domain mesh.example.com
+```
+
+它会自动安装依赖、创建隔离账户、生成 Key、安装 systemd 服务并验证 `/healthz`；重复运行就是
+保留数据的升级。完整步骤、非交互安装和加密备份见 [Hub 部署说明](deploy/hub/README.md)。
+公益 Hub 无法解密任务正文，但仍能看到邮箱 ID、方向、时间和密文大小等路由元数据。
 
 ## 安全与隐私
 
@@ -217,4 +228,4 @@ Ubuntu/systemd 模板和上线检查见 [Hub 部署说明](deploy/hub/README.md)
 | `.skill/captchamesh-adapter/` | Agent 接入 Skill |
 | `deploy/hub/` | 自托管 Hub 配置 |
 
-欢迎阅读 [贡献指南](CONTRIBUTING.md)。当前版本为 `0.18.3`，采用 [MIT License](LICENSE)。
+欢迎阅读 [贡献指南](CONTRIBUTING.md)。当前版本为 `0.19.0`，采用 [MIT License](LICENSE)。

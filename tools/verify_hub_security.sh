@@ -16,14 +16,21 @@ if [[ ! "${public_host}" =~ ^[A-Za-z0-9.-]+$ || "${public_host}" == .* || "${pub
   exit 2
 fi
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-origin_host="$(ssh -G "${deploy_host}" | awk '$1 == "hostname" {print $2; exit}')"
+ssh_hostname="$(ssh -G "${deploy_host}" 2>/dev/null \
+  | awk '$1 == "hostname" {print $2; exit}')"
+origin_host="$(getent ahostsv4 "${ssh_hostname}" 2>/dev/null \
+  | awk '$2 == "STREAM" {print $1; exit}' || true)"
 
 if [[ -z "${origin_host}" ]]; then
-  echo "unable to resolve deploy host" >&2
+  echo "unable to resolve deploy host to an IPv4 address" >&2
   exit 1
 fi
 
-if rg -a -F -q --hidden -g '!.git/**' -g '!.secrets/**' "${origin_host}" "${project_root}"; then
+if (
+  cd "${project_root}"
+  git ls-files --cached --others --exclude-standard -z \
+    | xargs -0 grep -a -F -q -- "${origin_host}"
+); then
   echo "origin address remains in the working tree" >&2
   exit 1
 fi
@@ -50,6 +57,12 @@ grep -qi '^HTTP/2 200' <<<"${response_headers}"
 grep -qi '^cache-control: no-store' <<<"${response_headers}"
 grep -qi '^x-content-type-options: nosniff' <<<"${response_headers}"
 grep -qi '^x-frame-options: DENY' <<<"${response_headers}"
+grep -qi '^strict-transport-security: max-age=31536000' <<<"${response_headers}"
+
+http_response_headers="$(curl -fsSI --connect-timeout 5 --max-time 10 \
+  "http://${public_host}/healthz")"
+grep -qi '^HTTP/1.1 308' <<<"${http_response_headers}"
+grep -qi "^location: https://${public_host}/healthz" <<<"${http_response_headers}"
 
 origin_body="$(curl -sS --connect-timeout 5 --max-time 10 \
   --resolve "${public_host}:80:${origin_host}" "http://${public_host}/healthz" 2>/dev/null || true)"
@@ -92,6 +105,14 @@ assert cryptography.__version__ == "50.0.0"
 PY
 
 systemctl is-active --quiet captchamesh-hub cloudflared
+[[ "$(systemctl show captchamesh-hub -p User --value)" == captchamesh ]]
+[[ "$(systemctl show captchamesh-hub -p Group --value)" == captchamesh ]]
+[[ "$(systemctl show cloudflared -p User --value)" == cloudflared ]]
+[[ "$(systemctl show cloudflared -p Group --value)" == cloudflared ]]
+[[ "$(systemctl show cloudflared -p NoNewPrivileges --value)" == yes ]]
+[[ "$(systemctl show cloudflared -p ProtectSystem --value)" == strict ]]
+[[ "$(sudo stat -c '%a %U:%G' /etc/cloudflared/tunnel.token)" == \
+  '640 root:cloudflared' ]]
 REMOTE
 
 echo "CaptchaMesh security verification passed"

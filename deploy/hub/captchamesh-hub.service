@@ -14,7 +14,6 @@ Environment=CAPTCHAMESH_DB_PATH=/var/lib/captchamesh-hub/broker.db
 Environment=CAPTCHAMESH_REGISTRY_PATH=/opt/captchamesh-hub/registrations.json
 Environment=CAPTCHAMESH_API_KEY_FILE=/etc/captchamesh-hub/api.key
 Environment=CAPTCHAMESH_NODE_KEY_FILE=/etc/captchamesh-hub/node.key
-Environment=CAPTCHAMESH_ALLOW_PUBLIC_PAIRING=1
 EnvironmentFile=/etc/captchamesh-hub/hub.env
 ExecStart=/opt/captchamesh-hub/.venv/bin/hypercorn --bind 127.0.0.1:8890 --workers 1 --backlog 128 --keep-alive 5 --max-requests 10000 --max-requests-jitter 1000 --graceful-timeout 15 broker_asgi:app
 Restart=on-failure

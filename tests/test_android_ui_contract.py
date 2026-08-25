@@ -114,9 +114,9 @@ class AndroidUiContractTest(unittest.TestCase):
         self.assertNotIn("buildTimelineCard()", self.activity)
         self.assertIn("sectionDivider(dp(44))", self.activity)
 
-    def test_release_version_is_0183(self):
-        self.assertIn("versionCode = 21", self.build)
-        self.assertIn('versionName = "0.18.3"', self.build)
+    def test_release_version_is_0190(self):
+        self.assertIn("versionCode = 22", self.build)
+        self.assertIn('versionName = "0.19.0"', self.build)
 
     def test_launcher_icon_uses_safe_artwork_and_themed_monochrome_mark(self):
         launcher = LAUNCHER.read_text(encoding="utf-8")

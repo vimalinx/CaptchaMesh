@@ -379,6 +379,38 @@ class BrokerSecurityBoundaryTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.headers["Cache-Control"], "no-store")
         self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(response.headers["X-Frame-Options"], "DENY")
+        self.assertEqual(
+            response.headers["Strict-Transport-Security"], "max-age=31536000"
+        )
+
+    async def test_cloudflare_http_request_is_redirected_to_https(self) -> None:
+        app = broker.make_app(
+            api_key="admin-secret",
+            node_key="node-secret",
+            allowed_hosts={"mesh.vimalinx.com"},
+        )
+        response = await app.test_client().get(
+            "/healthz?probe=1",
+            headers={
+                "Host": "mesh.vimalinx.com",
+                "CF-Visitor": '{"scheme":"http"}',
+            },
+            scope_base={"client": ("127.0.0.1", 41000)},
+        )
+        self.assertEqual(response.status_code, 308)
+        self.assertEqual(
+            response.headers["Location"],
+            "https://mesh.vimalinx.com/healthz?probe=1",
+        )
+
+    async def test_untrusted_cloudflare_visitor_header_cannot_force_redirect(self) -> None:
+        app = broker.make_app(api_key="admin-secret", node_key="node-secret")
+        response = await app.test_client().get(
+            "/healthz",
+            headers={"CF-Visitor": '{"scheme":"http"}'},
+            scope_base={"client": ("203.0.113.5", 41000)},
+        )
+        self.assertEqual(response.status_code, 200)
 
     async def test_invalid_cloudflare_client_address_is_rejected(self) -> None:
         app = broker.make_app(api_key="admin-secret", node_key="node-secret")

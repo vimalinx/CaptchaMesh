@@ -63,7 +63,9 @@ for key_name in api node; do
   sudo chmod 0640 "${key_path}"
 done
 
-printf 'CAPTCHAMESH_ALLOWED_HOSTS=%s,127.0.0.1,localhost\n' "${public_host}" \
+printf '%s\n' \
+  "CAPTCHAMESH_ALLOWED_HOSTS=${public_host},127.0.0.1,localhost" \
+  'CAPTCHAMESH_ALLOW_PUBLIC_PAIRING=1' \
   | sudo tee /etc/captchamesh-hub/hub.env >/dev/null
 sudo chown root:captchamesh /etc/captchamesh-hub/hub.env
 sudo chmod 0640 /etc/captchamesh-hub/hub.env

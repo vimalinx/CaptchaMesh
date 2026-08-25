@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from quart import Quart, g, jsonify, request
+from quart import Quart, g, jsonify, redirect, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
 from challenge_protocol import (
@@ -824,9 +824,28 @@ def make_app(
         bucket.append(timestamp)
 
     @app.before_request
-    async def security_gate() -> None:
-        if request_host() not in configured_hosts:
+    async def security_gate():
+        host = request_host()
+        if host not in configured_hosts:
             raise RequestError("ERROR_BAD_HOST", "Host is not allowed")
+        remote = request.remote_addr or "unknown"
+        try:
+            remote_ip = ipaddress.ip_address(remote)
+        except ValueError:
+            remote_ip = None
+        visitor = request.headers.get("CF-Visitor", "").strip()
+        if visitor and remote_ip is not None and remote_ip.is_loopback:
+            try:
+                scheme = json.loads(visitor).get("scheme")
+            except (AttributeError, json.JSONDecodeError) as exc:
+                raise RequestError(
+                    "ERROR_BAD_PROXY_HEADER", "invalid Cloudflare visitor header"
+                ) from exc
+            if scheme == "http":
+                target = f"https://{host}{request.path}"
+                if request.query_string:
+                    target += "?" + request.query_string.decode("ascii", errors="strict")
+                return redirect(target, code=308)
         g.captchamesh_request_slot = False
         try:
             await asyncio.wait_for(request_slots.acquire(), timeout=0.05)
@@ -857,6 +876,7 @@ def make_app(
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        response.headers["Strict-Transport-Security"] = "max-age=31536000"
         return response
 
     def discard_ephemeral(task_id: str) -> None:

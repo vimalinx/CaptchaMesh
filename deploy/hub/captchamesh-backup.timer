@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the encrypted CaptchaMesh Hub backup daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

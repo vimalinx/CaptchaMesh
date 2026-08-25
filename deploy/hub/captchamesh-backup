@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+backup_root=/var/backups/captchamesh-hub
+gpg_home=/var/lib/captchamesh-backup/gnupg
+recipient_file=/etc/captchamesh-backup/recipient
+database=/var/lib/captchamesh-hub/broker.db
+stage="$(mktemp -d "${backup_root}/.stage.XXXXXX")"
+cleanup() {
+  rm -rf -- "${stage}"
+}
+trap cleanup EXIT
+
+recipient="$(tr -d '[:space:]' < "${recipient_file}")"
+[[ "${recipient}" =~ ^[A-F0-9]{40}$ ]]
+
+sqlite3 "${database}" ".backup '${stage}/broker.db'"
+install -m 0600 /etc/captchamesh-hub/api.key "${stage}/api.key"
+install -m 0600 /etc/captchamesh-hub/node.key "${stage}/node.key"
+install -m 0600 /etc/captchamesh-hub/hub.env "${stage}/hub.env"
+install -m 0600 /opt/captchamesh-hub/registrations.json "${stage}/registrations.json"
+
+output="${backup_root}/captchamesh-$(date -u +%Y%m%dT%H%M%SZ).tar.gpg"
+tar -C "${stage}" -cf - broker.db api.key node.key hub.env registrations.json \
+  | GNUPGHOME="${gpg_home}" gpg --batch --yes --trust-model always \
+      --recipient "${recipient}" --encrypt --output "${output}"
+chmod 0600 "${output}"
+test -s "${output}"
+
+find "${backup_root}" -maxdepth 1 -type f -name 'captchamesh-*.tar.gpg' \
+  -mtime +14 -delete
