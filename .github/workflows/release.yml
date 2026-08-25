@@ -24,6 +24,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
       - run: python -m pip install --disable-pip-version-check build
       - run: python -m build
+      - run: python tools/verify_public_release.py dist
       - working-directory: app-src
         run: ./gradlew --no-daemon :app:assembleDebug
       - name: Prepare release files

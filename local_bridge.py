@@ -298,7 +298,10 @@ class LocalBridge:
 
     def _make_app(self) -> Quart:
         app = Quart(__name__)
-        setup_prefix = "/setup/" + self.setup_token
+
+        def setup_authorized() -> bool:
+            supplied = request.headers.get("X-CaptchaMesh-Setup", "")
+            return hmac.compare_digest(supplied, self.setup_token)
 
         @app.after_request
         async def security_headers(response: Response) -> Response:
@@ -307,7 +310,8 @@ class LocalBridge:
             response.headers["Cache-Control"] = "no-store"
             response.headers["Content-Security-Policy"] = (
                 "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline';"
-                " img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+                " img-src 'self' blob:; connect-src 'self'; frame-ancestors 'none';"
+                " base-uri 'none'; form-action 'none'"
             )
             return response
 
@@ -315,12 +319,14 @@ class LocalBridge:
         async def healthz():
             return jsonify(ok=True, service="captchamesh-local-bridge", protocolVersion=1)
 
-        @app.get(setup_prefix)
+        @app.get("/setup")
         async def setup_page():
-            return Response(self._setup_html(setup_prefix), content_type="text/html; charset=utf-8")
+            return Response(self._setup_html(), content_type="text/html; charset=utf-8")
 
-        @app.get(setup_prefix + "/pairing.svg")
+        @app.get("/setup/pairing.svg")
         async def pairing_svg():
+            if not setup_authorized():
+                return Response(status=403)
             if not self.pairing.pairing_uri:
                 return Response(status=404)
             image = qrcode.make(
@@ -333,14 +339,15 @@ class LocalBridge:
             image.save(output)
             return Response(output.getvalue(), content_type="image/svg+xml")
 
-        @app.get(setup_prefix + "/status")
+        @app.get("/setup/status")
         async def setup_status():
+            if not setup_authorized():
+                return jsonify(error="invalid setup token"), 403
             return jsonify(await self.connection_status())
 
-        @app.post(setup_prefix + "/pair")
+        @app.post("/setup/pair")
         async def setup_pair():
-            csrf = request.headers.get("X-CaptchaMesh-CSRF", "")
-            if not hmac.compare_digest(csrf, self.setup_token):
+            if not setup_authorized():
                 return jsonify(error="invalid setup token"), 403
             try:
                 await asyncio.to_thread(self.pairing.restart)
@@ -478,11 +485,9 @@ class LocalBridge:
 
         return app
 
-    def _setup_html(self, setup_prefix: str) -> str:
+    def _setup_html(self) -> str:
         local_key_path = self.state_file.parent / "local-api.key"
         escaped_path = html.escape(str(local_key_path))
-        csrf = json.dumps(self.setup_token)
-        prefix = json.dumps(setup_prefix)
         has_qr = "true" if self.pairing.pairing_uri else "false"
         return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -500,16 +505,18 @@ button:hover{{opacity:.9}} button:focus-visible{{outline:3px solid white;outline
 @media (prefers-reduced-motion:reduce){{*{{transition:none!important}}}}
 </style></head><body><main><h1>CaptchaMesh</h1><p class="lead">电脑负责加密，手机负责手动完成验证。</p>
 <section><div class="status"><span id="dot" class="dot"></span><span id="state">正在检查连接…</span></div><p id="detail" class="hint"></p></section>
-<section id="pair"><h2>用手机扫描</h2><p class="hint">二维码 60 秒有效，只在这台电脑和手机之间使用。</p><img id="qr" {'hidden' if not self.pairing.pairing_uri else ''} src="{setup_prefix}/pairing.svg" alt="CaptchaMesh 一次性配对二维码"><br><button id="again" type="button">{'二维码过期了，重新生成' if self.pairing.pairing_uri else '生成配对二维码'}</button><p id="pairError" class="error" role="alert"></p></section>
+<section id="pair"><h2>用手机扫描</h2><p class="hint">二维码 60 秒有效，只在这台电脑和手机之间使用。</p><img id="qr" hidden alt="CaptchaMesh 一次性配对二维码"><br><button id="again" type="button">{'二维码过期了，重新生成' if self.pairing.pairing_uri else '生成配对二维码'}</button><p id="pairError" class="error" role="alert"></p></section>
 <section><h2>Agent 接入</h2><p>本机 API：<code id="apiBase"></code></p><p>本机 Key 文件：<code>{escaped_path}</code></p><p class="hint">配对完成后，Agent 可调用 v1 的 /in.php、/res.php，或 v2 的 /createTask、/getTaskResult。</p></section>
 </main><script>
-const prefix={prefix}, csrf={csrf}; let hasQr={has_qr};
+const capability=location.hash.slice(1); history.replaceState(null,'',location.pathname);
+const prefix='/setup', headers={{'X-CaptchaMesh-Setup':capability}}; let hasQr={has_qr};
 document.querySelector('#apiBase').textContent=location.origin;
-async function refresh(){{try{{const r=await fetch(prefix+'/status',{{cache:'no-store'}}),s=await r.json();
+async function loadQr(force=false){{const qr=document.querySelector('#qr');if(!hasQr||!capability||(!force&&qr.dataset.loaded==='1'))return;const r=await fetch(prefix+'/pairing.svg',{{headers,cache:'no-store'}});if(!r.ok)return;if(qr.src.startsWith('blob:'))URL.revokeObjectURL(qr.src);qr.src=URL.createObjectURL(await r.blob());qr.dataset.loaded='1';qr.hidden=false}}
+async function refresh(){{if(!capability){{document.querySelector('#dot').className='dot bad';document.querySelector('#state').textContent='配对链接无效或已被清除';document.querySelector('#detail').textContent='请回到终端重新获取配对链接';return}}try{{const r=await fetch(prefix+'/status',{{headers,cache:'no-store'}}),s=await r.json();if(!r.ok)throw new Error('unauthorized');
 const dot=document.querySelector('#dot'), state=document.querySelector('#state'), detail=document.querySelector('#detail'), pair=document.querySelector('#pair');
 if(s.paired){{dot.className='dot ok';state.textContent='手机已连接';detail.textContent=s.phoneName||'';pair.hidden=true}}
-else{{dot.className='dot';state.textContent='等待手机配对';detail.textContent=s.error||'打开手机相机扫描下面的二维码';pair.hidden=false}}}}catch(e){{document.querySelector('#dot').className='dot bad';document.querySelector('#state').textContent='本机服务异常';document.querySelector('#detail').textContent='刷新页面重试'}}}}
-document.querySelector('#again').addEventListener('click',async e=>{{e.currentTarget.disabled=true;document.querySelector('#pairError').textContent='';try{{const r=await fetch(prefix+'/pair',{{method:'POST',headers:{{'X-CaptchaMesh-CSRF':csrf}}}}),v=await r.json();if(!r.ok)throw new Error(v.error||'生成失败');hasQr=true;const qr=document.querySelector('#qr');qr.hidden=false;qr.src=prefix+'/pairing.svg?t='+Date.now();e.currentTarget.textContent='二维码过期了，重新生成';await refresh()}}catch(x){{document.querySelector('#pairError').textContent=x.message+'。请检查 Hub 地址或邀请密钥。'}}finally{{e.currentTarget.disabled=false}}}});
+else{{dot.className='dot';state.textContent='等待手机配对';detail.textContent=s.error||'打开手机相机扫描下面的二维码';pair.hidden=false;await loadQr()}}}}catch(e){{document.querySelector('#dot').className='dot bad';document.querySelector('#state').textContent='本机服务异常';document.querySelector('#detail').textContent='请从终端重新获取配对链接'}}}}
+document.querySelector('#again').addEventListener('click',async e=>{{e.currentTarget.disabled=true;document.querySelector('#pairError').textContent='';try{{const r=await fetch(prefix+'/pair',{{method:'POST',headers}}),v=await r.json();if(!r.ok)throw new Error(v.error||'生成失败');hasQr=true;await loadQr(true);e.currentTarget.textContent='二维码过期了，重新生成';await refresh()}}catch(x){{document.querySelector('#pairError').textContent=x.message+'。请检查 Hub 地址或邀请密钥。'}}finally{{e.currentTarget.disabled=false}}}});
 refresh();setInterval(refresh,2500);
 </script></body></html>"""
 

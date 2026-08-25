@@ -36,8 +36,9 @@ result = solver.hcaptcha(
 )
 ```
 
-使用其他 v2 客户端时，把 API base URL 指向电脑本机的 `http://127.0.0.1:8893`，Key 可由
-`captchamesh config --json` 提供给受信任的本机进程。不要把本机桥映射到局域网或公网。
+使用其他 v2 客户端时，把 API base URL 指向电脑本机的 `http://127.0.0.1:8893`。默认的
+`captchamesh config --json` 只返回受限 Key 文件路径；确实需要明文值的受信任本机进程可显式
+运行 `captchamesh config --json --show-secret`。不要记录其输出，也不要把本机桥映射到局域网或公网。
 
 支持任务、字段映射与明确不支持项见 [2Captcha API 兼容层](twocaptcha-v2-compat.md)。
 

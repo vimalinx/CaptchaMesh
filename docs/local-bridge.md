@@ -25,8 +25,12 @@ CaptchaMesh 状态目录中的 `hub-api.key`，或者首次
 captchamesh start --api-key-file /受限路径/hub-api.key
 ```
 
-程序只监听 `127.0.0.1:8893`。终端会打印带随机能力令牌的本机配对链接；打开后用手机扫描
-二维码。二维码过期时可以在页面内重新生成，手机连接后页面自动更新。
+程序只监听 `127.0.0.1:8893`。交互终端会打印带随机能力令牌的本机配对链接；打开后令牌
+只由页面读取，并立即从地址栏和浏览器历史中清除，不会进入 HTTP 请求路径。用手机扫描二维码
+即可配对，二维码过期时可以在页面内重新生成，手机连接后页面自动更新。服务管理器等非交互
+环境不会直接打印链接，而是把完整链接写入状态目录中的权限 `0600` 文件，并只输出该文件路径，
+方便本机 Agent 安全读取而不让令牌进入服务日志。确实需要直接读取标准输出时可显式使用
+`captchamesh start --show-setup-url`，并自行保护日志。
 重复运行 `captchamesh start` 会识别已有实例并重新输出状态链接，不会再启动一份服务。
 
 配对状态、本机 API Key 和任务状态数据库默认位于
@@ -55,7 +59,8 @@ token = solver.turnstile(
 captchamesh config --json
 ```
 
-该命令会主动输出本机 Key，应只在受信任的本机进程中使用。官方 `2captcha-python` 会固定
+默认只输出 API 地址和权限受限的 Key 文件路径，不显示 Key。只有确实需要把 Key 传给受信任
+的本机进程时，才使用 `captchamesh config --json --show-secret`；不要记录或转发其输出。官方 `2captcha-python` 会固定
 使用 HTTPS，因此不能只把它的 `server` 改成 loopback；CaptchaMesh 提供的 `TwoCaptcha`
 适配器保留其调用方法，并把传输安全地限制在本机 HTTP。
 

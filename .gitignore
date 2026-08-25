@@ -17,3 +17,16 @@ app-src/**/build/
 
 # Machine-local configuration
 registrations.json
+
+# Maintainer-local files. Keep this boundary in Git instead of relying on
+# .git/info/exclude, which is lost when the repository is copied or recloned.
+/AGENTS.md
+/deploy/local/
+/webshare_register.py
+/phone_connect_proxy.py
+/tests/test_webshare_register.py
+/daemon.py
+/worker.py
+/worker_in_proot.py
+/termux_setup.sh
+/pwa/

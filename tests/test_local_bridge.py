@@ -6,6 +6,9 @@ import os
 import socket
 import tempfile
 import unittest
+from argparse import Namespace
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -14,7 +17,10 @@ from captchamesh_cli import (
     bridge_is_running,
     default_state_file,
     ensure_private_key,
+    print_setup_url,
+    read_private_text,
     require_available_port,
+    show_config,
     write_private_text,
 )
 from local_bridge import LocalBridge, PairingManager
@@ -163,16 +169,21 @@ class LocalBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(FakeRelayClient.max_active, 1)
 
     async def test_setup_page_hides_pairing_secret_and_reports_phone(self) -> None:
-        prefix = "/setup/" + self.bridge.setup_token
+        prefix = "/setup"
+        headers = {"X-CaptchaMesh-Setup": self.bridge.setup_token}
         page = await self.client.get(prefix)
         source = await page.get_data(as_text=True)
         self.assertNotIn("sensitive", source)
+        self.assertNotIn(self.bridge.setup_token, source)
         self.assertIn("用手机扫描", source)
         self.assertIn("alt=\"CaptchaMesh 一次性配对二维码\"", source)
-        status = await self.client.get(prefix + "/status")
+        status = await self.client.get(prefix + "/status", headers=headers)
         self.assertEqual((await status.get_json())["phoneName"], "Test Phone")
-        qr = await self.client.get(prefix + "/pairing.svg")
+        qr = await self.client.get(prefix + "/pairing.svg", headers=headers)
         self.assertEqual(qr.content_type, "image/svg+xml")
+
+        self.assertEqual((await self.client.get(prefix + "/status")).status_code, 403)
+        self.assertEqual((await self.client.get(prefix + "/pairing.svg")).status_code, 403)
 
     async def test_completed_results_expire_from_local_database(self) -> None:
         task_id = self.bridge.store.create(
@@ -188,7 +199,7 @@ class LocalBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.bridge.store.get(task_id))
 
     async def test_pairing_regeneration_requires_setup_capability(self) -> None:
-        prefix = "/setup/" + self.bridge.setup_token
+        prefix = "/setup"
         forbidden = await self.client.post(prefix + "/pair")
         self.assertEqual(forbidden.status_code, 403)
 
@@ -199,7 +210,7 @@ class LocalBridgeTest(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.pairing, "restart", side_effect=restart) as called:
             accepted = await self.client.post(
                 prefix + "/pair",
-                headers={"X-CaptchaMesh-CSRF": self.bridge.setup_token},
+                headers={"X-CaptchaMesh-Setup": self.bridge.setup_token},
             )
         self.assertEqual(accepted.status_code, 200)
         self.assertTrue((await accepted.get_json())["ok"])
@@ -207,6 +218,49 @@ class LocalBridgeTest(unittest.IsolatedAsyncioTestCase):
 
 
 class LocalKeyTest(unittest.TestCase):
+    def test_noninteractive_setup_url_is_redacted_unless_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            private_file = Path(directory) / "setup-url"
+            output = StringIO()
+            with patch(
+                "captchamesh_cli.sys.stdout.isatty", return_value=False
+            ), redirect_stdout(output):
+                print_setup_url(
+                    "http://127.0.0.1:8893/setup#private-capability",
+                    private_file=private_file,
+                )
+            self.assertNotIn("private-capability", output.getvalue())
+            self.assertIn(str(private_file), output.getvalue())
+            self.assertIn("private-capability", private_file.read_text(encoding="utf-8"))
+            self.assertEqual(private_file.stat().st_mode & 0o777, 0o600)
+
+        output = StringIO()
+        with redirect_stdout(output):
+            print_setup_url(
+                "http://127.0.0.1:8893/setup#private-capability", force=True
+            )
+        self.assertIn("private-capability", output.getvalue())
+
+    def test_config_redacts_key_unless_explicit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "relay-pairing.json"
+            key = state.parent / "local-api.key"
+            key.write_text("local-private-value\n", encoding="utf-8")
+            args = Namespace(state_file=state, port=8893, json=True, show_secret=False)
+            output = StringIO()
+            with redirect_stdout(output):
+                show_config(args)
+            config = json.loads(output.getvalue())
+            self.assertNotIn("apiKey", config)
+            self.assertEqual(config["apiKeyFile"], str(key))
+            self.assertNotIn("local-private-value", output.getvalue())
+
+            args.show_secret = True
+            output = StringIO()
+            with redirect_stdout(output):
+                show_config(args)
+            self.assertEqual(json.loads(output.getvalue())["apiKey"], "local-private-value")
+
     def test_local_key_is_stable_and_owner_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config" / "local-api.key"
@@ -222,6 +276,19 @@ class LocalKeyTest(unittest.TestCase):
             write_private_text(path, "capability")
             self.assertEqual(path.read_text(encoding="utf-8").strip(), "capability")
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_private_state_io_rejects_symbolic_links(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target = root / "target"
+            target.write_text("do-not-overwrite", encoding="utf-8")
+            link = root / "local-api.key"
+            link.symlink_to(target)
+            with self.assertRaises(OSError):
+                write_private_text(link, "replacement")
+            with self.assertRaises(OSError):
+                read_private_text(link)
+            self.assertEqual(target.read_text(encoding="utf-8"), "do-not-overwrite")
 
     def test_existing_local_bridge_is_detected_idempotently(self) -> None:
         response = Mock(status_code=200)
@@ -260,7 +327,7 @@ class LocalKeyTest(unittest.TestCase):
         for endpoint in (
             "http://example.test:8891",
             "https://127.0.0.1:8891",
-            "http://localhost:8891@example.test",
+            "http://" + "localhost:8891" + "@example.test",
         ):
             with self.subTest(endpoint=endpoint), self.assertRaisesRegex(ValueError, "loopback"):
                 TwoCaptcha("local-test-key", endpoint=endpoint)

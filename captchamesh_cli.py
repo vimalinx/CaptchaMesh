@@ -8,6 +8,8 @@ import json
 import os
 import secrets
 import socket
+import stat
+import sys
 from pathlib import Path
 
 import requests
@@ -41,28 +43,66 @@ def ensure_private_key(path: Path) -> str:
     except OSError:
         pass
     if path.exists():
-        value = path.read_text(encoding="utf-8").strip()
+        value = read_private_text(path)
         if not value:
             raise RuntimeError(f"本机 API Key 文件为空：{path}")
-        path.chmod(0o600)
         return value
     value = "local-" + secrets.token_urlsafe(32)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
     try:
-        os.write(descriptor, (value + "\n").encode("utf-8"))
+        _validate_private_descriptor(descriptor, path)
+        _write_all(descriptor, (value + "\n").encode("utf-8"))
     finally:
         os.close(descriptor)
     return value
 
 
-def write_private_text(path: Path, value: str) -> None:
-    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+def _validate_private_descriptor(descriptor: int, path: Path) -> None:
+    info = os.fstat(descriptor)
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+        raise RuntimeError(f"受限状态文件必须是单链接普通文件：{path}")
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    remaining = memoryview(data)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written < 1:
+            raise OSError("写入受限状态文件失败")
+        remaining = remaining[written:]
+
+
+def read_private_text(path: Path) -> str:
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
     try:
-        os.write(descriptor, (value + "\n").encode("utf-8"))
+        _validate_private_descriptor(descriptor, path)
+        if os.fstat(descriptor).st_size > 65536:
+            raise RuntimeError(f"受限状态文件异常过大：{path}")
+        os.fchmod(descriptor, 0o600)
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 8192):
+            chunks.append(chunk)
+        return b"".join(chunks).decode("utf-8").strip()
     finally:
         os.close(descriptor)
-    path.chmod(0o600)
+
+
+def write_private_text(path: Path, value: str) -> None:
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    flags = os.O_WRONLY | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        _validate_private_descriptor(descriptor, path)
+        os.fchmod(descriptor, 0o600)
+        os.ftruncate(descriptor, 0)
+        _write_all(descriptor, (value + "\n").encode("utf-8"))
+    finally:
+        os.close(descriptor)
 
 
 def bridge_is_running(host: str, port: int) -> bool:
@@ -92,6 +132,21 @@ def require_available_port(host: str, port: int) -> None:
         probe.close()
 
 
+def print_setup_url(
+    url: str, *, force: bool = False, private_file: Path | None = None
+) -> None:
+    """Print a capability URL only to an interactive terminal by default."""
+    if private_file is not None:
+        write_private_text(private_file, url)
+    if force or sys.stdout.isatty():
+        print(f"配对与状态：{url}", flush=True)
+        return
+    if private_file is not None:
+        print(f"配对链接已写入受限文件：{private_file}", flush=True)
+    else:
+        print("配对链接已从非交互输出中隐藏", flush=True)
+
+
 async def run_start(args: argparse.Namespace) -> None:
     if args.host not in {"127.0.0.1", "::1", "localhost"}:
         raise SystemExit("本地兼容桥只允许监听 loopback 地址")
@@ -99,15 +154,17 @@ async def run_start(args: argparse.Namespace) -> None:
     state_file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     local_key_file = state_file.parent / "local-api.key"
     setup_token_file = state_file.parent / f"setup-token-{args.port}"
+    setup_url_file = state_file.parent / f"setup-url-{args.port}"
     database = state_file.parent / "bridge.db"
     host_for_url = "127.0.0.1" if args.host in {"::1", "localhost"} else args.host
     if bridge_is_running(args.host, args.port):
         print("CaptchaMesh 本地加密桥已在运行", flush=True)
         if setup_token_file.is_file():
-            setup_token = setup_token_file.read_text(encoding="utf-8").strip()
-            print(
-                f"配对与状态：http://{host_for_url}:{args.port}/setup/{setup_token}",
-                flush=True,
+            setup_token = read_private_text(setup_token_file)
+            print_setup_url(
+                f"http://{host_for_url}:{args.port}/setup#{setup_token}",
+                force=args.show_setup_url,
+                private_file=setup_url_file,
             )
         print(f"2Captcha v2 地址：http://{host_for_url}:{args.port}", flush=True)
         return
@@ -138,16 +195,24 @@ async def run_start(args: argparse.Namespace) -> None:
         pairing=pairing,
         setup_token=setup_token,
     )
-    setup_url = f"http://{host_for_url}:{args.port}/setup/{bridge.setup_token}"
+    setup_url = f"http://{host_for_url}:{args.port}/setup#{bridge.setup_token}"
     print("CaptchaMesh 本地加密桥已启动", flush=True)
-    print(f"配对与状态：{setup_url}", flush=True)
+    print_setup_url(
+        setup_url,
+        force=args.show_setup_url,
+        private_file=setup_url_file,
+    )
     print(f"2Captcha v2 地址：http://{host_for_url}:{args.port}", flush=True)
     print(f"本机 API Key：{local_key_file}（不会显示在终端）", flush=True)
     config = Config()
     config.bind = [f"{args.host}:{args.port}"]
     config.accesslog = None
     config.errorlog = "-"
-    await serve(bridge.app, config)
+    try:
+        await serve(bridge.app, config)
+    finally:
+        setup_token_file.unlink(missing_ok=True)
+        setup_url_file.unlink(missing_ok=True)
 
 
 def show_config(args: argparse.Namespace) -> None:
@@ -157,14 +222,18 @@ def show_config(args: argparse.Namespace) -> None:
         raise SystemExit("CaptchaMesh 尚未初始化，请先运行 captchamesh start")
     value = {
         "apiBase": f"http://127.0.0.1:{args.port}",
-        "apiKey": key_file.read_text(encoding="utf-8").strip(),
+        "apiKeyFile": str(key_file),
         "stateFile": str(state_file),
     }
+    if args.show_secret:
+        value["apiKey"] = read_private_text(key_file)
     if args.json:
         print(json.dumps(value, ensure_ascii=False))
     else:
         print(f"API 地址：{value['apiBase']}")
-        print(f"API Key：{value['apiKey']}")
+        print(f"API Key 文件：{value['apiKeyFile']}")
+        if args.show_secret:
+            print(f"API Key：{value['apiKey']}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -179,11 +248,21 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--state-file", type=Path, default=default_state_file())
     start.add_argument("--api-key-file", type=Path)
     start.add_argument("--name", default=socket.gethostname())
+    start.add_argument(
+        "--show-setup-url",
+        action="store_true",
+        help="即使输出被重定向，也显示包含一次性能力令牌的配对链接",
+    )
 
     config = subparsers.add_parser("config", help="输出 Agent 接入配置")
     config.add_argument("--port", type=int, default=8893)
     config.add_argument("--state-file", type=Path, default=default_state_file())
     config.add_argument("--json", action="store_true")
+    config.add_argument(
+        "--show-secret",
+        action="store_true",
+        help="显式把本机 API Key 输出到终端；默认只显示受限密钥文件路径",
+    )
     return parser
 
 
