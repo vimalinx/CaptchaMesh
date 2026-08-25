@@ -1,0 +1,16 @@
+[
+  {
+    "id": "safe-demo",
+    "name": "安全协议联调",
+    "summary": "启动一个短暂的无账号测试进程，用于验证远程登记与触发协议",
+    "provides": ["节点登记验证", "远程触发验证"],
+    "details": [
+      {"label": "交付", "value": "仅返回成功状态，不创建账号、不访问外部平台"}
+    ],
+    "description": "Safe protocol fixture.",
+    "cwd": "/tmp",
+    "command": ["/usr/bin/python3", "-c", "import time; time.sleep(0.2)"],
+    "captchaTypes": [],
+    "enabled": true
+  }
+]

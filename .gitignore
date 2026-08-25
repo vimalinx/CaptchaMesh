@@ -1,0 +1,19 @@
+.venv/
+.secrets/
+.ai/
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+*.db
+logs_*.log
+*.apk
+accounts.jsonl
+build/
+dist/
+*.egg-info/
+app-src/.gradle/
+app-src/**/build/
+
+# Machine-local configuration
+registrations.json

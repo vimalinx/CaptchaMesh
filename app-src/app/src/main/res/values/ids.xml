@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <item name="nav_registrations" type="id" />
+    <item name="nav_task" type="id" />
+    <item name="nav_diagnostics" type="id" />
+    <item name="nav_log" type="id" />
+    <item name="nav_settings" type="id" />
+</resources>

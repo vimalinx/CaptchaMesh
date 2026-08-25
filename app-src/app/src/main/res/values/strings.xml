@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="registration_count">%1$d 个流程 · %2$d 个可启动</string>
+    <string name="challenge_title">手动验证 · %1$s · %2$s</string>
+    <string name="broker_summary">%1$s · %2$s</string>
+    <string name="log_entry">%1$s  %2$s\n%3$s</string>
+    <string name="selected_positions">已选择 %1$d 个位置</string>
+    <string name="selected_cells">已选择 %1$d 个格子</string>
+    <string name="disclosure_collapsed">%1$s · 查看完整内容</string>
+    <string name="disclosure_expanded">%1$s · 收起完整内容</string>
+</resources>

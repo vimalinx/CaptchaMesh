@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "captchamesh"
+version = "0.18.0"
+description = "Personal, endpoint-encrypted CAPTCHA handoff between an Agent and Android"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+keywords = ["captcha", "android", "human-in-the-loop", "agent"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Internet :: WWW/HTTP",
+]
+dependencies = [
+  "2captcha-python==2.1.0",
+  "cryptography==50.0.0",
+  "hypercorn==0.18.0",
+  "qrcode==8.2",
+  "quart==0.22.0",
+  "requests==2.34.2",
+]
+
+[project.scripts]
+captchamesh = "captchamesh_cli:main"
+
+[tool.setuptools]
+py-modules = [
+  "broker",
+  "broker_asgi",
+  "captchamesh_cli",
+  "captchamesh_client",
+  "challenge_protocol",
+  "demo_registration",
+  "local_bridge",
+  "node_agent",
+  "pair_device",
+  "relay_client",
+  "relay_protocol",
+  "twocaptcha_compat",
+]
+
+[tool.setuptools.packages.find]
+include = ["captchamesh"]

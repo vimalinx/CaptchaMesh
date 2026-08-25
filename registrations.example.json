@@ -1,0 +1,26 @@
+[
+  {
+    "id": "captchamesh-demo",
+    "name": "CaptchaMesh 自检",
+    "summary": "运行一次手机验证链路自检，不创建平台账号",
+    "provides": [
+      "验证链路自检"
+    ],
+    "details": [
+      {
+        "label": "用途",
+        "value": "确认电脑、Hub、手机通知和人工回传链路可用"
+      }
+    ],
+    "description": "启动一条可见 Turnstile 流程，验证人工接管链路。",
+    "cwd": ".",
+    "command": [
+      "python3",
+      "demo_registration.py"
+    ],
+    "captchaTypes": [
+      "turnstile"
+    ],
+    "enabled": true
+  }
+]

@@ -1,0 +1,6 @@
+interface:
+  display_name: "CaptchaMesh 工作流适配"
+  short_description: "把现有 Agent 的 CAPTCHA 步骤接入手机人工验证"
+  default_prompt: "Use $captchamesh-adapter to adapt this workflow to CaptchaMesh and verify the integration."
+policy:
+  allow_implicit_invocation: true
