@@ -228,4 +228,4 @@ sudo ./deploy/hub/install.sh --domain mesh.example.com
 | `.skill/captchamesh-adapter/` | Agent 接入 Skill |
 | `deploy/hub/` | 自托管 Hub 配置 |
 
-欢迎阅读 [贡献指南](CONTRIBUTING.md)。当前版本为 `0.19.0`，采用 [MIT License](LICENSE)。
+欢迎阅读 [贡献指南](CONTRIBUTING.md)。当前版本为 `0.19.1`，采用 [MIT License](LICENSE)。

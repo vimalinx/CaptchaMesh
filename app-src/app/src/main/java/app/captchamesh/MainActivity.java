@@ -732,16 +732,20 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 publishDiagnostic(0, "失败", connectionErrorHint(exception), 0);
             }
 
-            try {
-                stats = new JSONObject(
-                        Http.get(http, checkBaseUrl + "/v1/stats", checkAuthorization).body);
-                if (!"3".equals(stats.optString("protocolVersion"))) {
-                    throw new IllegalStateException("protocol mismatch");
+            if (checkAuthorization.isEmpty()) {
+                publishDiagnostic(1, "未配置", "前往设置页填写 API Key 后重新检查", 0);
+            } else {
+                try {
+                    stats = new JSONObject(
+                            Http.get(http, checkBaseUrl + "/v1/stats", checkAuthorization).body);
+                    if (!"3".equals(stats.optString("protocolVersion"))) {
+                        throw new IllegalStateException("protocol mismatch");
+                    }
+                    publishDiagnostic(1, "正常", "API Key 有效；鉴权接口返回协议 v3", 2);
+                    passed++;
+                } catch (Exception exception) {
+                    publishDiagnostic(1, "失败", connectionErrorHint(exception), 0);
                 }
-                publishDiagnostic(1, "正常", "API Key 有效；鉴权接口返回协议 v3", 2);
-                passed++;
-            } catch (Exception exception) {
-                publishDiagnostic(1, "失败", connectionErrorHint(exception), 0);
             }
 
             if (stats == null) {
@@ -819,8 +823,20 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     private void refreshRegistrations() {
         if (destroyed || active || brokerInput == null) return;
         saveBroker();
-        renderConnectionState("连接中", Tints.WARNING, Tints.WARNING_SOFT);
         brokerField.setError(null);
+        apiKeyField.setError(null);
+        if (apiAuthorization().isEmpty()) {
+            renderConnectionState("待配置", Tints.TEXT_SECONDARY, Tints.SURFACE_MUTED);
+            refreshButton.setText("刷新");
+            refreshButton.setEnabled(!active);
+            registrationSummary.setText("填写 API Key 后读取电脑端工作流");
+            registrationList.removeAllViews();
+            registrationList.addView(emptyPanel(
+                    "尚未配置 API Key",
+                    "前往设置页粘贴 API Key；保存后再刷新工作流。"));
+            return;
+        }
+        renderConnectionState("连接中", Tints.WARNING, Tints.WARNING_SOFT);
         refreshButton.setEnabled(false);
         refreshButton.setText("读取中");
         registrationSummary.setText("正在同步电脑端白名单工作流");
@@ -843,18 +859,22 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
     private void renderConnectionError(Exception exception) {
         renderConnectionState("连接失败", Tints.DANGER, Tints.DANGER_SOFT);
-        brokerField.setError(connectionErrorHint(exception));
-        selectPage(R.id.nav_settings);
+        String detail = concise(exception);
+        String hint = connectionErrorHint(exception);
+        boolean authenticationError = detail.contains("HTTP 401") || detail.contains("HTTP 403");
+        brokerField.setError(authenticationError ? null : hint);
+        apiKeyField.setError(authenticationError ? hint : null);
         registrationSummary.setText("暂时无法读取电脑端列表");
         registrationList.removeAllViews();
         registrationList.addView(emptyPanel(
                 "没有连接到电脑",
-                connectionErrorHint(exception) + "\n" + concise(exception)));
+                hint + "\n" + detail));
     }
 
     private void renderRegistrations(JSONArray registrations) {
         renderConnectionState("已连接", Tints.ACCENT, Tints.ACCENT_SOFT);
         brokerField.setError(null);
+        apiKeyField.setError(null);
         registrationList.removeAllViews();
         startButtons.clear();
         int enabledCount = 0;

@@ -21,11 +21,11 @@
 2. 为 Tunnel 添加 Public Hostname，例如 `mesh.example.com`，Service 填
    `http://localhost:8890`。
 3. 从 [GitHub Releases](https://github.com/vimalinx/CaptchaMesh/releases) 下载并解压
-   `captchamesh-hub-v0.19.0.tar.gz`。
+   `captchamesh-hub-v0.19.1.tar.gz`。
 4. 运行安装器：
 
 ```bash
-cd captchamesh-hub-v0.19.0
+cd captchamesh-hub-v0.19.1
 sudo ./deploy/hub/install.sh --domain mesh.example.com
 ```
 

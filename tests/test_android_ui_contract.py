@@ -114,9 +114,9 @@ class AndroidUiContractTest(unittest.TestCase):
         self.assertNotIn("buildTimelineCard()", self.activity)
         self.assertIn("sectionDivider(dp(44))", self.activity)
 
-    def test_release_version_is_0190(self):
-        self.assertIn("versionCode = 22", self.build)
-        self.assertIn('versionName = "0.19.0"', self.build)
+    def test_release_version_is_0191(self):
+        self.assertIn("versionCode = 23", self.build)
+        self.assertIn('versionName = "0.19.1"', self.build)
 
     def test_launcher_icon_uses_safe_artwork_and_themed_monochrome_mark(self):
         launcher = LAUNCHER.read_text(encoding="utf-8")
@@ -144,6 +144,47 @@ class AndroidUiContractTest(unittest.TestCase):
         self.assertIn('BROKER_DOMAIN_MIGRATION', self.activity)
         self.assertIn('"http://127.0.0.1:8890".equals(savedBroker)', self.activity)
         self.assertIn('"https://mesh.vimalinx.com"', self.watch_service)
+
+    def test_missing_api_key_is_a_neutral_local_state(self):
+        method = re.search(
+            r"private void refreshRegistrations\(\) \{(?P<body>.*?)\n    \}",
+            self.activity,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(method)
+        body = method.group("body")
+        guard = body.index("if (apiAuthorization().isEmpty())")
+        request = body.index("executor.submit")
+        self.assertLess(guard, request)
+        self.assertIn('renderConnectionState("待配置"', body)
+        self.assertIn('"尚未配置 API Key"', body)
+        self.assertIn("apiKeyField.setError(null)", body)
+
+    def test_connection_errors_target_the_relevant_field_without_navigation(self):
+        method = re.search(
+            r"private void renderConnectionError\(Exception exception\) \{(?P<body>.*?)\n    \}",
+            self.activity,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(method)
+        body = method.group("body")
+        self.assertIn('detail.contains("HTTP 401")', body)
+        self.assertIn('detail.contains("HTTP 403")', body)
+        self.assertIn("brokerField.setError(authenticationError ? null : hint)", body)
+        self.assertIn("apiKeyField.setError(authenticationError ? hint : null)", body)
+        self.assertNotIn("selectPage", body)
+
+    def test_diagnostics_distinguish_missing_and_invalid_api_keys(self):
+        method = re.search(
+            r"private void runDiagnostics\(\) \{(?P<body>.*?)\n    \}",
+            self.activity,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(method)
+        body = method.group("body")
+        self.assertIn("if (checkAuthorization.isEmpty())", body)
+        self.assertIn('publishDiagnostic(1, "未配置"', body)
+        self.assertIn('Http.get(http, checkBaseUrl + "/v1/stats", checkAuthorization)', body)
 
 
 if __name__ == "__main__":
