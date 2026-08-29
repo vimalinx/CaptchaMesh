@@ -126,24 +126,22 @@ class AndroidUiContractTest(unittest.TestCase):
         self.assertNotIn("RelayWatchService.start", body)
         self.assertNotIn("Http.post(", body)
 
-    def test_workflow_and_agent_processing_share_only_a_fair_human_focus_lock(self):
+    def test_workflow_keeps_fair_focus_while_agent_tasks_use_isolated_sessions(self):
         self.assertIn("workflowExecutor.submit(() -> runRegistration", self.activity)
         self.assertIn("workflowExecutor.submit(() -> finishRegistrationMonitor", self.activity)
-        self.assertIn("relayExecutor.submit(() -> solveRelayEnvelope", self.activity)
+        self.assertIn("Executors.newCachedThreadPool()", self.activity)
+        self.assertIn("relayExecutor.submit(() -> solveRelayEnvelope(session))", self.activity)
         relay = re.search(
             r"private void processPendingRelay\(\) \{(?P<body>.*?)\n    \}",
             self.activity,
             re.DOTALL,
         )
         self.assertIsNotNone(relay)
-        self.assertLess(
-            relay.group("body").index("relayProcessing = true"),
-            relay.group("body").index("relayExecutor.submit"),
-        )
         self.assertNotIn("active || !storedRunId().isEmpty()", relay.group("body"))
-        self.assertIn("challengeVisible()", relay.group("body"))
+        self.assertIn("taskSource == TaskSource.WORKFLOW && challengeVisible()", relay.group("body"))
         self.assertIn("humanChallengeLock.lockInterruptibly()", self.activity)
         self.assertIn("humanChallengeLock.unlock()", self.activity)
+        self.assertIn("session.sessionSolver.solve(task, assets)", self.activity)
 
         start = re.search(
             r"private void startRegistration\(String registrationId, String name\) \{(?P<body>.*?)\n    \}",
@@ -164,7 +162,11 @@ class AndroidUiContractTest(unittest.TestCase):
         self.assertIn("static synchronized JSONObject peekEnvelope", relay_store)
         self.assertIn("static synchronized boolean removeEnvelope", relay_store)
         self.assertIn('text("并发任务"', self.activity)
-        self.assertIn('current ? "处理中" : "等待中"', self.activity)
+        self.assertIn('current ? "当前" : opened ? "已打开" : "切换"', self.activity)
+        self.assertIn("row.setMinimumHeight(dp(56))", self.activity)
+        self.assertIn("row.setOnClickListener(view -> switchAgentTask(task.messageId))", self.activity)
+        self.assertIn("点任一任务切换，已选内容会保留", self.activity)
+        self.assertIn('detail = prompt.isEmpty() ? task.host() : prompt', self.activity)
         self.assertIn("agentTaskSummary.setAccessibilityLiveRegion", self.activity)
         self.assertIn("RelayStore.pendingEnvelopes(this)", self.activity)
         self.assertIn("ACTION_QUEUE_CHANGED", self.relay_service)
@@ -172,8 +174,7 @@ class AndroidUiContractTest(unittest.TestCase):
         self.assertIn("relayUiHandler.postDelayed(this, 1000)", self.activity)
         self.assertIn("pending != observedRelayCount", self.activity)
         self.assertIn("relayUiHandler.removeCallbacks(relayQueuePulse)", self.activity)
-        self.assertIn("advanceRelayAfterChallenge = true", self.activity)
-        self.assertIn("if (advanceRelayAfterChallenge)", self.activity)
+        self.assertIn("relaySessions.putIfAbsent(messageId, created)", self.activity)
         self.assertIn("challengeCard.post(this::processPendingRelay)", self.activity)
         enqueue = self.relay_service.index("RelayStore.enqueueEnvelope")
         ack = self.relay_service.index('config.hub + "/v1/relay/ack"')
@@ -182,14 +183,34 @@ class AndroidUiContractTest(unittest.TestCase):
 
     def test_current_task_identifies_the_actual_challenge(self):
         show = re.search(
-            r"public void showChallenge\(View challenge, CaptchaTask task\) \{(?P<body>.*?)\n    \}",
+            r"\n    @Override\n    public void showChallenge\(View challenge, CaptchaTask task\) "
+            r"\{(?P<body>.*?)\n    \}",
             self.activity,
             re.DOTALL,
         )
         self.assertIsNotNone(show)
-        self.assertIn("setTaskState(TaskPanelState.WAITING_HUMAN", show.group("body"))
-        self.assertIn('friendlyCaptcha(task.type) + " · " + task.host()', show.group("body"))
+        self.assertIn("displayChallenge(challenge, task, taskSource, true)", show.group("body"))
+        display = re.search(
+            r"private void displayChallenge\(.*?\) \{(?P<body>.*?)\n    \}",
+            self.activity,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(display)
+        self.assertIn("setTaskState(TaskPanelState.WAITING_HUMAN", display.group("body"))
+        self.assertIn('(prompt.isEmpty() ? task.host() : prompt)', display.group("body"))
         self.assertIn('runState.setContentDescription("当前任务，"', self.activity)
+
+    def test_agent_task_switching_preserves_views_and_isolates_results(self):
+        self.assertIn("private final class AgentRelaySession implements Solver.Ui", self.activity)
+        self.assertIn("volatile View challenge", self.activity)
+        self.assertIn("displayAgentChallenge(existing, true)", self.activity)
+        self.assertIn("activeRelayMessageId = messageId", self.activity)
+        self.assertIn("session.config", self.activity)
+        self.assertIn('.put("taskId", task.id)', self.activity)
+        self.assertIn("relaySessions.remove(messageId, session)", self.activity)
+        self.assertIn("claimWebRelaySlot(messageId)", self.activity)
+        self.assertIn("网页验证需逐个完成", self.activity)
+        self.assertIn("MAX_OPEN_AGENT_SESSIONS = 8", self.activity)
 
     def test_structured_challenges_put_submit_before_secondary_editing_actions(self):
         native = (ACTIVITY.parent / "NativeChallengeView.java").read_text(encoding="utf-8")

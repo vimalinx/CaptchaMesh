@@ -151,6 +151,7 @@ captchamesh start >captchamesh-start.log 2>&1
 | 坐标点击 | 任务进入 processing | 点击目标位置 | 返回坐标数组 |
 | 图片网格 | 任务进入 processing | 选择多个格子 | 返回序号数组 |
 | 旋转 | 任务进入 processing | 调整角度 | 返回角度 |
+| 多任务切换 | 同时创建两个原生图片任务 | 在任务 A 操作后切到 B，再切回 A | A 的输入状态保留，两个结果按各自 `taskId` 回传 |
 | Turnstile | 保留原浏览器上下文 | 手动完成组件 | 返回 token |
 | DataDome | 代理与 UA 匹配 | 手动完成滑块 | 返回 Cookie/token 结果 |
 

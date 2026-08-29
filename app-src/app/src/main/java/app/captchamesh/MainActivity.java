@@ -72,6 +72,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 import javax.crypto.Cipher;
@@ -96,6 +97,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     private static final String BROKER_DOMAIN_MIGRATION = "broker_domain_migration_vimalinx_v1";
     private static final int REQUEST_NOTIFICATIONS = 2001;
     private static final int GCM_TAG_LENGTH_BITS = 128;
+    private static final int MAX_OPEN_AGENT_SESSIONS = 8;
     private static final String[] TYPES = {
             "turnstile", "hcaptcha", "recaptcha_v2", "recaptcha_v3", "webview",
             "image_text", "coordinates", "grid", "rotate", "funcaptcha",
@@ -130,17 +132,60 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         final String messageId;
         final String title;
         final String detail;
+        final boolean structured;
 
-        AgentTaskSummary(String messageId, String title, String detail) {
+        AgentTaskSummary(String messageId, String title, String detail, boolean structured) {
             this.messageId = messageId;
             this.title = title;
             this.detail = detail;
+            this.structured = structured;
+        }
+    }
+
+    private final class AgentRelaySession implements Solver.Ui {
+        final String messageId;
+        final RelayStore.Config config;
+        final JSONObject envelope;
+        final Solver sessionSolver;
+        volatile CaptchaTask task;
+        volatile View challenge;
+        volatile boolean finished;
+
+        AgentRelaySession(
+                String messageId, RelayStore.Config config, JSONObject envelope) {
+            this.messageId = messageId;
+            this.config = config;
+            this.envelope = envelope;
+            this.sessionSolver = new Solver(MainActivity.this, this);
+        }
+
+        @Override
+        public void showChallenge(View challenge, CaptchaTask task) {
+            this.challenge = challenge;
+            this.task = task;
+            if (messageId.equals(activeRelayMessageId)) {
+                displayAgentChallenge(this, true);
+            }
+            refreshAgentTaskQueue();
+        }
+
+        @Override
+        public void clearChallenge(View challenge) {
+            if (this.challenge == challenge) this.challenge = null;
+            if (messageId.equals(displayedRelayMessageId)) {
+                clearDisplayedAgentChallenge(messageId);
+            }
+        }
+
+        void shutdown() {
+            finished = true;
+            sessionSolver.shutdown();
         }
     }
 
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final ExecutorService workflowExecutor = Executors.newSingleThreadExecutor();
-    private final ExecutorService relayExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService relayExecutor = Executors.newCachedThreadPool();
     private final ExecutorService relayQueueExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService diagnosticExecutor = Executors.newSingleThreadExecutor();
     private final ReentrantLock humanChallengeLock = new ReentrantLock(true);
@@ -221,9 +266,11 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     private volatile boolean taskRefreshInFlight;
     private volatile boolean relayProcessing;
     private volatile String activeRelayMessageId = "";
+    private volatile String displayedRelayMessageId = "";
+    private volatile String activeWebRelayMessageId = "";
+    private final Map<String, AgentRelaySession> relaySessions = new ConcurrentHashMap<>();
     private long agentQueueRevision;
     private boolean relayReceiverRegistered;
-    private boolean advanceRelayAfterChallenge;
     private int observedRelayCount = -1;
     private final Runnable relayQueuePulse = new Runnable() {
         @Override public void run() {
@@ -503,7 +550,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         LinearLayout header = sectionHeader(
                 R.drawable.ic_list,
                 text("并发任务", 16, Tints.TEXT, true),
-                text("任务同时进入队列，人工验证按顺序聚焦", 12, Tints.TEXT_MUTED, false));
+                text("点任一任务切换，已选内容会保留", 12, Tints.TEXT_MUTED, false));
         card.addView(header);
 
         agentTaskSummary = text("当前没有 Agent 任务", 12, Tints.TEXT_SECONDARY, true);
@@ -530,18 +577,21 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 String messageId = envelope.optString("messageId", "");
                 String title = "加密任务";
                 String detail = "等待安全读取";
+                boolean structured = false;
                 if (config != null) {
                     try {
                         JSONObject payload = RelayCrypto.decrypt(
                                 config.secret, envelope, "node_to_phone");
                         CaptchaTask task = new CaptchaTask(payload);
                         title = friendlyCaptcha(task.type);
-                        detail = task.host();
+                        String prompt = task.presentation.optString("prompt", "").trim();
+                        detail = prompt.isEmpty() ? task.host() : prompt;
+                        structured = task.structured();
                     } catch (Exception ignored) {
                         detail = "无法读取任务信息";
                     }
                 }
-                summaries.add(new AgentTaskSummary(messageId, title, detail));
+                summaries.add(new AgentTaskSummary(messageId, title, detail, structured));
             }
             runOnUiThread(() -> {
                 if (revision != agentQueueRevision || destroyed) return;
@@ -553,17 +603,29 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     private void renderAgentTaskQueue(List<AgentTaskSummary> tasks) {
         if (agentTaskList == null || agentTaskSummary == null) return;
         agentTaskList.removeAllViews();
-        int processing = 0;
         for (AgentTaskSummary task : tasks) {
             boolean current = !activeRelayMessageId.isEmpty()
                     && activeRelayMessageId.equals(task.messageId);
-            if (current) processing++;
+            boolean opened = relaySessions.containsKey(task.messageId);
 
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setMinimumHeight(dp(52));
-            row.setPadding(0, dp(6), 0, dp(6));
+            row.setMinimumHeight(dp(56));
+            row.setPadding(dp(10), dp(6), dp(8), dp(6));
+            row.setBackground(Tints.rounded(
+                    current ? Tints.WARNING_SOFT : Tints.SURFACE, dp(10)));
+            row.setForeground(new RippleDrawable(
+                    Tints.ripple(), null, Tints.rounded(Color.WHITE, dp(10))));
+            row.setClickable(!current);
+            row.setFocusable(!current);
+            row.setEnabled(!current);
+            String state = current ? "当前" : opened ? "已打开" : "切换";
+            row.setContentDescription(task.title + "，" + task.detail + "，" + state
+                    + (task.structured ? "" : "，网页验证需逐个完成"));
+            if (!current) {
+                row.setOnClickListener(view -> switchAgentTask(task.messageId));
+            }
 
             LinearLayout copy = new LinearLayout(this);
             copy.setOrientation(LinearLayout.VERTICAL);
@@ -578,19 +640,18 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
             row.addView(copy, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-            row.addView(statusPill(current ? "处理中" : "等待中",
-                    current ? Tints.WARNING : Tints.TEXT_SECONDARY,
-                    current ? Tints.WARNING_SOFT : Tints.SURFACE_MUTED), wrapEnd());
+            row.addView(statusPill(state,
+                    current ? Tints.WARNING : opened ? Tints.INFO : Tints.TEXT_SECONDARY,
+                    current ? Tints.WARNING_SOFT
+                            : opened ? Tints.INFO_SOFT : Tints.SURFACE_MUTED), wrapEnd());
             if (agentTaskList.getChildCount() > 0) {
                 agentTaskList.addView(sectionDivider(0));
             }
             agentTaskList.addView(row, row());
         }
-        int waiting = Math.max(0, tasks.size() - processing);
         String summary = tasks.isEmpty()
                 ? "当前没有 Agent 任务"
-                : tasks.size() + " 个任务：" + processing + " 个处理中，"
-                        + waiting + " 个等待";
+                : tasks.size() + " 个任务 · 点任务即可切换";
         agentTaskSummary.setText(summary);
         agentTaskSummary.setContentDescription("Agent 任务队列，" + summary);
         agentTaskList.setVisibility(tasks.isEmpty() ? View.GONE : View.VISIBLE);
@@ -1482,8 +1543,8 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
             Toast.makeText(this, "当前已有工作流在运行", Toast.LENGTH_SHORT).show();
             return;
         }
-        if (challengeVisible()) {
-            Toast.makeText(this, "请先完成当前人工验证", Toast.LENGTH_SHORT).show();
+        if (challengeVisible() || !relaySessions.isEmpty()) {
+            Toast.makeText(this, "请先完成已打开的 Agent 验证", Toast.LENGTH_SHORT).show();
             return;
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
@@ -1985,6 +2046,12 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
     @Override
     public void showChallenge(View challenge, CaptchaTask task) {
+        displayedRelayMessageId = "";
+        displayChallenge(challenge, task, taskSource, true);
+    }
+
+    private void displayChallenge(
+            View challenge, CaptchaTask task, TaskSource source, boolean scrollIntoView) {
         ViewParent parent = challenge.getParent();
         if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(challenge);
         challengeHost.removeAllViews();
@@ -2006,12 +2073,16 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 : (task.type.equals("webview")
                         ? "在下方手动完成验证"
                         : "完成验证后提交"));
-        setTaskState(TaskPanelState.WAITING_HUMAN, taskSource,
-                friendlyCaptcha(task.type) + " · " + task.host());
+        String prompt = task.presentation.optString("prompt", "").trim();
+        setTaskState(TaskPanelState.WAITING_HUMAN, source,
+                friendlyCaptcha(task.type) + " · "
+                        + (prompt.isEmpty() ? task.host() : prompt));
         challengeCard.setVisibility(View.VISIBLE);
         updateTaskControls();
         selectPage(R.id.nav_task);
-        taskScroll.post(() -> taskScroll.smoothScrollTo(0, challengeCard.getTop()));
+        if (scrollIntoView) {
+            taskScroll.post(() -> taskScroll.smoothScrollTo(0, challengeCard.getTop()));
+        }
     }
 
     @Override
@@ -2019,10 +2090,21 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         challengeHost.removeAllViews();
         challengeCard.setVisibility(View.GONE);
         updateTaskControls();
-        if (advanceRelayAfterChallenge) {
-            advanceRelayAfterChallenge = false;
-            challengeCard.post(this::processPendingRelay);
-        }
+    }
+
+    private void displayAgentChallenge(AgentRelaySession session, boolean scrollIntoView) {
+        if (destroyed || session.finished || session.challenge == null || session.task == null
+                || !session.messageId.equals(activeRelayMessageId)) return;
+        displayedRelayMessageId = session.messageId;
+        displayChallenge(session.challenge, session.task, TaskSource.AGENT, scrollIntoView);
+    }
+
+    private void clearDisplayedAgentChallenge(String messageId) {
+        if (!messageId.equals(displayedRelayMessageId)) return;
+        displayedRelayMessageId = "";
+        challengeHost.removeAllViews();
+        challengeCard.setVisibility(View.GONE);
+        updateTaskControls();
     }
 
     private void setInputsEnabled(boolean enabled) {
@@ -3045,30 +3127,124 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     }
 
     private void processPendingRelay() {
-        if (taskIntakePaused || relayProcessing || challengeVisible()
-                || destroyed || !foregroundVisible) return;
+        if (taskIntakePaused || destroyed || !foregroundVisible) return;
+        if (taskSource == TaskSource.WORKFLOW && challengeVisible()) return;
+        if (!activeRelayMessageId.isEmpty()
+                && relaySessions.containsKey(activeRelayMessageId)) return;
         JSONObject pending = RelayStore.peekEnvelope(this);
         RelayStore.Config config = RelayStore.load(this);
         if (pending == null || config == null) return;
-        relayProcessing = true;
-        activeRelayMessageId = pending.optString("messageId", "");
-        setTaskState(TaskPanelState.RELAY_LOADING, TaskSource.AGENT,
-                "正在安全读取个人 Agent 任务");
-        refreshAgentTaskQueue();
-        selectPage(R.id.nav_task);
-        relayExecutor.submit(() -> solveRelayEnvelope(config, pending));
+        openAgentTask(config, pending);
     }
 
-    private void solveRelayEnvelope(RelayStore.Config config, JSONObject inputEnvelope) {
+    private void switchAgentTask(String messageId) {
+        if (messageId == null || messageId.isEmpty()
+                || messageId.equals(activeRelayMessageId)) return;
+        if (taskSource == TaskSource.WORKFLOW && challengeVisible()) {
+            Toast.makeText(this, "请先完成当前电脑工作流验证", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        AgentRelaySession existing = relaySessions.get(messageId);
+        if (existing != null) {
+            activeRelayMessageId = messageId;
+            refreshAgentTaskQueue();
+            if (existing.challenge != null) {
+                displayAgentChallenge(existing, true);
+            } else {
+                showAgentTaskLoading();
+            }
+            return;
+        }
+        JSONObject envelope = findRelayEnvelope(messageId);
+        RelayStore.Config config = RelayStore.load(this);
+        if (envelope == null || config == null) {
+            refreshAgentTaskQueue();
+            Toast.makeText(this, "任务已变化，请刷新后再试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (relaySessions.size() >= MAX_OPEN_AGENT_SESSIONS) {
+            Toast.makeText(this, "最多同时打开 8 个任务，请先完成一个", Toast.LENGTH_LONG).show();
+            return;
+        }
+        openAgentTask(config, envelope);
+    }
+
+    private JSONObject findRelayEnvelope(String messageId) {
+        JSONArray queued = RelayStore.pendingEnvelopes(this);
+        for (int index = 0; index < queued.length(); index++) {
+            JSONObject envelope = queued.optJSONObject(index);
+            if (envelope != null && messageId.equals(envelope.optString("messageId", ""))) {
+                return envelope;
+            }
+        }
+        return null;
+    }
+
+    private void openAgentTask(RelayStore.Config config, JSONObject envelope) {
+        String messageId = envelope.optString("messageId", "");
+        if (messageId.isEmpty()) return;
+        activeRelayMessageId = messageId;
+        AgentRelaySession existing = relaySessions.get(messageId);
+        if (existing != null) {
+            refreshAgentTaskQueue();
+            if (existing.challenge != null) displayAgentChallenge(existing, true);
+            else showAgentTaskLoading();
+            return;
+        }
+        AgentRelaySession created = new AgentRelaySession(messageId, config, envelope);
+        AgentRelaySession raced = relaySessions.putIfAbsent(messageId, created);
+        AgentRelaySession session = raced == null ? created : raced;
+        if (raced != null) created.shutdown();
+        relayProcessing = true;
+        showAgentTaskLoading();
+        refreshAgentTaskQueue();
+        selectPage(R.id.nav_task);
+        if (raced == null) relayExecutor.submit(() -> solveRelayEnvelope(session));
+    }
+
+    private void showAgentTaskLoading() {
+        displayedRelayMessageId = "";
+        challengeHost.removeAllViews();
+        challengeCard.setVisibility(View.GONE);
+        setTaskState(TaskPanelState.RELAY_LOADING, TaskSource.AGENT,
+                "正在安全读取所选 Agent 任务");
+    }
+
+    private synchronized boolean claimWebRelaySlot(String messageId) {
+        if (!activeWebRelayMessageId.isEmpty()
+                && !activeWebRelayMessageId.equals(messageId)) return false;
+        activeWebRelayMessageId = messageId;
+        return true;
+    }
+
+    private synchronized void releaseWebRelaySlot(String messageId) {
+        if (messageId.equals(activeWebRelayMessageId)) activeWebRelayMessageId = "";
+    }
+
+    private void solveRelayEnvelope(AgentRelaySession session) {
         JSONObject taskPayload = null;
         boolean removeLocal = false;
-        String messageId = inputEnvelope.optString("messageId", "");
+        boolean ownsWebSlot = false;
+        String messageId = session.messageId;
         try {
-            taskPayload = RelayCrypto.decrypt(config.secret, inputEnvelope, "node_to_phone");
+            taskPayload = RelayCrypto.decrypt(
+                    session.config.secret, session.envelope, "node_to_phone");
             if (!"captcha_task".equals(taskPayload.getString("kind"))) {
                 throw new IllegalArgumentException("unknown relay payload");
             }
             CaptchaTask task = new CaptchaTask(taskPayload);
+            session.task = task;
+            if (!task.structured()) {
+                ownsWebSlot = claimWebRelaySlot(messageId);
+                if (!ownsWebSlot) {
+                    runOnUiThread(() -> {
+                        Toast.makeText(this,
+                                "网页验证需逐个完成，可先切换到图片类任务",
+                                Toast.LENGTH_LONG).show();
+                    });
+                    return;
+                }
+            }
             JSONObject inline = taskPayload.optJSONObject("assets");
             Map<String, Bitmap> assets = new HashMap<>();
             for (String name : task.assetNames()) {
@@ -3083,23 +3259,25 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 resetProgressHistory();
                 appendLogOnUi("收到端到端加密的 " + task.type + " 任务");
             });
-            Solver.Solution solved = solveWithHumanFocus(task, assets, TaskSource.AGENT,
-                    friendlyCaptcha(task.type) + " · 来自已配对的个人 Agent");
-            sendRelayResult(config, new JSONObject().put("kind", "captcha_result")
+            Solver.Solution solved = session.sessionSolver.solve(task, assets);
+            sendRelayResult(session.config, new JSONObject().put("kind", "captcha_result")
                     .put("taskId", task.id).put("status", "ready")
                     .put("solution", solved.value));
             removeLocal = true;
             runOnUiThread(() -> {
-                setTaskState(TaskPanelState.RESULT_SENT, TaskSource.AGENT,
-                        friendlyCaptcha(task.type) + " · 已交给个人 Agent");
+                if (messageId.equals(activeRelayMessageId)) {
+                    setTaskState(TaskPanelState.RESULT_SENT, TaskSource.AGENT,
+                            friendlyCaptcha(task.type) + " · 已交给个人 Agent");
+                }
                 appendLog("加密结果已回传给个人 Agent");
             });
         } catch (Exception exception) {
+            if (destroyed || Thread.currentThread().isInterrupted()) return;
             DiagnosticLog.error(this, "AGENT_TASK", "PROCESS_FAILED", exception);
             try {
-                if (taskPayload != null && inputEnvelope != null) {
+                if (taskPayload != null) {
                     String taskId = taskPayload.optString("taskId", "unknown");
-                    sendRelayResult(config, new JSONObject().put("kind", "captcha_result")
+                    sendRelayResult(session.config, new JSONObject().put("kind", "captcha_result")
                             .put("taskId", taskId).put("status", "failed")
                             .put("errorDescription", concise(exception)));
                     removeLocal = true;
@@ -3107,29 +3285,62 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
             } catch (Exception ignored) { }
             if (taskPayload == null) removeLocal = true;
             runOnUiThread(() -> {
-                setTaskState(TaskPanelState.FAILED, TaskSource.AGENT,
-                        "验证未完成 · " + concise(exception));
+                if (messageId.equals(activeRelayMessageId)) {
+                    setTaskState(TaskPanelState.FAILED, TaskSource.AGENT,
+                            "验证未完成 · " + concise(exception));
+                }
                 Toast.makeText(this,
                         "加密任务处理失败：" + concise(exception), Toast.LENGTH_LONG).show();
             });
         } finally {
             if (removeLocal && !messageId.isEmpty()) RelayStore.removeEnvelope(this, messageId);
-            relayProcessing = false;
-            activeRelayMessageId = "";
+            if (ownsWebSlot) releaseWebRelaySlot(messageId);
+            session.finished = true;
+            relaySessions.remove(messageId, session);
+            relayProcessing = !relaySessions.isEmpty();
             boolean completedLocally = removeLocal;
-            runOnUiThread(() -> {
-                refreshAgentTaskQueue();
-                updateTaskControls();
-                if (completedLocally && RelayStore.pendingCount(this) > 0 && !taskIntakePaused) {
-                    advanceRelayAfterChallenge = true;
-                    if (!challengeVisible()) {
-                        advanceRelayAfterChallenge = false;
-                        challengeCard.post(this::processPendingRelay);
-                    }
-                } else if (completedLocally && !storedRunId().isEmpty()) {
-                    restoreWorkflowTaskState();
+            runOnUiThread(() -> finishAgentSessionUi(session, completedLocally));
+        }
+    }
+
+    private void finishAgentSessionUi(AgentRelaySession session, boolean completedLocally) {
+        if (session.messageId.equals(displayedRelayMessageId)) {
+            clearDisplayedAgentChallenge(session.messageId);
+        }
+        if (session.messageId.equals(activeRelayMessageId)) activeRelayMessageId = "";
+        refreshAgentTaskQueue();
+        updateTaskControls();
+        if (activeRelayMessageId.isEmpty()) {
+            for (AgentRelaySession candidate : relaySessions.values()) {
+                if (!candidate.finished && candidate.challenge != null) {
+                    activeRelayMessageId = candidate.messageId;
+                    displayAgentChallenge(candidate, false);
+                    refreshAgentTaskQueue();
+                    return;
                 }
-            });
+            }
+            for (AgentRelaySession candidate : relaySessions.values()) {
+                if (!candidate.finished) {
+                    activeRelayMessageId = candidate.messageId;
+                    showAgentTaskLoading();
+                    refreshAgentTaskQueue();
+                    return;
+                }
+            }
+        }
+        if (!activeRelayMessageId.isEmpty()) {
+            AgentRelaySession selected = relaySessions.get(activeRelayMessageId);
+            if (selected != null && selected.challenge != null) {
+                displayAgentChallenge(selected, false);
+            }
+            return;
+        }
+        if (RelayStore.pendingCount(this) > 0 && !taskIntakePaused) {
+            challengeCard.post(this::processPendingRelay);
+        } else if (completedLocally && !storedRunId().isEmpty()) {
+            restoreWorkflowTaskState();
+        } else if (relaySessions.isEmpty() && RelayStore.pendingCount(this) == 0) {
+            returnTaskPanelToIdle();
         }
     }
 
@@ -3169,6 +3380,8 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     protected void onDestroy() {
         destroyed = true;
         active = false;
+        for (AgentRelaySession session : relaySessions.values()) session.shutdown();
+        relaySessions.clear();
         solver.shutdown();
         executor.shutdownNow();
         workflowExecutor.shutdownNow();
