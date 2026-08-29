@@ -7,6 +7,7 @@ import android.security.keystore.KeyProperties;
 import android.util.Base64;
 
 import org.json.JSONObject;
+import org.json.JSONArray;
 
 import java.nio.charset.StandardCharsets;
 import java.security.KeyStore;
@@ -18,7 +19,11 @@ import javax.crypto.SecretKey;
 import javax.crypto.spec.GCMParameterSpec;
 
 final class RelayStore {
+    enum EnqueueResult { ENQUEUED, DUPLICATE, FULL }
+
     static final String PREF_PENDING = "relay_pending_envelope";
+    static final String PREF_PENDING_QUEUE = "relay_pending_envelopes_v2";
+    static final int MAX_PENDING_ENVELOPES = 32;
     private static final String PREFS = "cm";
     private static final String DATA = "relay_config_ciphertext";
     private static final String IV = "relay_config_iv";
@@ -63,6 +68,8 @@ final class RelayStore {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                 .putString(DATA, Base64.encodeToString(encrypted, Base64.NO_WRAP))
                 .putString(IV, Base64.encodeToString(cipher.getIV(), Base64.NO_WRAP))
+                .remove(PREF_PENDING)
+                .remove(PREF_PENDING_QUEUE)
                 .apply();
     }
 
@@ -78,9 +85,75 @@ final class RelayStore {
             return new Config(new JSONObject(new String(cipher.doFinal(
                     Base64.decode(data, Base64.NO_WRAP)), StandardCharsets.UTF_8)));
         } catch (Exception exception) {
-            preferences.edit().remove(DATA).remove(IV).remove(PREF_PENDING).apply();
+            preferences.edit().remove(DATA).remove(IV).remove(PREF_PENDING)
+                    .remove(PREF_PENDING_QUEUE).apply();
             return null;
         }
+    }
+
+    static synchronized EnqueueResult enqueueEnvelope(Context context, JSONObject envelope) {
+        SharedPreferences preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        JSONArray queue = readQueue(preferences);
+        String messageId = envelope.optString("messageId", "");
+        if (messageId.isEmpty()) throw new IllegalArgumentException("relay message id missing");
+        for (int index = 0; index < queue.length(); index++) {
+            JSONObject queued = queue.optJSONObject(index);
+            if (queued != null && messageId.equals(queued.optString("messageId"))) {
+                return EnqueueResult.DUPLICATE;
+            }
+        }
+        if (queue.length() >= MAX_PENDING_ENVELOPES) return EnqueueResult.FULL;
+        queue.put(envelope);
+        if (!preferences.edit().putString(PREF_PENDING_QUEUE, queue.toString())
+                .remove(PREF_PENDING).commit()) {
+            throw new IllegalStateException("could not persist relay queue");
+        }
+        return EnqueueResult.ENQUEUED;
+    }
+
+    static synchronized JSONArray pendingEnvelopes(Context context) {
+        return readQueue(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE));
+    }
+
+    static synchronized JSONObject peekEnvelope(Context context) {
+        return pendingEnvelopes(context).optJSONObject(0);
+    }
+
+    static synchronized boolean removeEnvelope(Context context, String messageId) {
+        SharedPreferences preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        JSONArray queue = readQueue(preferences);
+        JSONArray remaining = new JSONArray();
+        boolean removed = false;
+        for (int index = 0; index < queue.length(); index++) {
+            JSONObject queued = queue.optJSONObject(index);
+            if (!removed && queued != null && messageId.equals(queued.optString("messageId"))) {
+                removed = true;
+            } else if (queued != null) {
+                remaining.put(queued);
+            }
+        }
+        if (!removed) return false;
+        return preferences.edit().putString(PREF_PENDING_QUEUE, remaining.toString())
+                .remove(PREF_PENDING).commit();
+    }
+
+    static synchronized int pendingCount(Context context) {
+        return pendingEnvelopes(context).length();
+    }
+
+    private static JSONArray readQueue(SharedPreferences preferences) {
+        JSONArray queue;
+        try {
+            queue = new JSONArray(preferences.getString(PREF_PENDING_QUEUE, "[]"));
+        } catch (Exception exception) {
+            queue = new JSONArray();
+        }
+        String legacy = preferences.getString(PREF_PENDING, "");
+        if (queue.length() == 0 && !legacy.isEmpty()) {
+            try { queue.put(new JSONObject(legacy)); }
+            catch (Exception ignored) { }
+        }
+        return queue;
     }
 
     private static SecretKey key() throws Exception {

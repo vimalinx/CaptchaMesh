@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私密安全报告
+    url: https://github.com/vimalinx/CaptchaMesh/security/advisories/new
+    about: 安全漏洞和敏感细节请勿提交公开 Issue。
+  - name: 使用与支持说明
+    url: https://github.com/vimalinx/CaptchaMesh/blob/main/SUPPORT.md
+    about: 先选择正确入口并准备脱敏复现信息。

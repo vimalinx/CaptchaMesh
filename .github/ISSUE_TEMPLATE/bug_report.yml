@@ -1,0 +1,56 @@
+name: Bug 报告
+description: 报告可复现的 CaptchaMesh 缺陷
+title: "[Bug] "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: 请勿提交密钥、Cookie、二维码、完整配对链接、账号数据或 CAPTCHA token。安全漏洞请使用私密漏洞报告。
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响范围
+      options:
+        - Android App
+        - 电脑端 CLI 或本机桥
+        - Agent Skill
+        - Hub 或自托管部署
+        - 接入或配置
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: CaptchaMesh 版本
+      description: 例如 v0.19.2；不要只写“最新版”。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 最小复现步骤
+      description: 从干净状态开始，列出能够稳定复现问题的步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期结果
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际结果和脱敏证据
+      description: 可附错误类型、公开日志片段或截图，但必须移除敏感信息。
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前确认
+      options:
+        - label: 我已确认这里不包含密钥、Cookie、二维码、完整配对链接、账号数据或 CAPTCHA token。
+          required: true
+        - label: 这不是需要私下报告的安全漏洞。
+          required: true

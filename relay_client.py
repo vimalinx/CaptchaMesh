@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +29,18 @@ class RelayClient:
         self.mailbox_id = state["mailboxId"]
         self.device_token = state["deviceToken"]
         self.pair_secret = b64url_decode(state["pairSecret"], name="pairSecret", expected_bytes=32)
-        self.http = requests.Session()
+        self._http_local = threading.local()
+        self._poll_lock = threading.Lock()
+        self._result_ready = threading.Condition()
+        self._results: OrderedDict[str, dict[str, Any]] = OrderedDict()
+
+    @property
+    def http(self) -> requests.Session:
+        session = getattr(self._http_local, "session", None)
+        if session is None:
+            session = requests.Session()
+            self._http_local.session = session
+        return session
 
     @property
     def _headers(self) -> dict[str, str]:
@@ -82,21 +95,43 @@ class RelayClient:
         wait_seconds = timeout if timeout is not None else int(public_task["timeoutSeconds"]) + 30
         deadline = time.monotonic() + wait_seconds
         while time.monotonic() < deadline:
+            with self._result_ready:
+                result = self._results.pop(task_id, None)
+            if result is not None:
+                if result.get("status") != "ready":
+                    raise RelayClientError(result.get("errorDescription", "手机未完成验证"))
+                return normalize_solution(public_task["type"], public_task, result.get("solution"))
+
             remaining = max(1, int(deadline - time.monotonic()))
-            status, result_envelope = self._post(
-                "/v1/relay/poll", {"waitSeconds": min(15, remaining)}, timeout=min(25, remaining + 5)
-            )
-            if status == 204:
+            if not self._poll_lock.acquire(timeout=min(1, remaining)):
+                with self._result_ready:
+                    self._result_ready.wait(timeout=min(1, remaining))
                 continue
-            result = decrypt_payload(
-                self.pair_secret, result_envelope, expected_direction="phone_to_node"
-            )
-            self._post(
-                "/v1/relay/ack", {"messageId": result_envelope["messageId"]}, timeout=20
-            )
-            if result.get("taskId") != task_id:
-                continue
-            if result.get("status") != "ready":
-                raise RelayClientError(result.get("errorDescription", "手机未完成验证"))
-            return normalize_solution(public_task["type"], public_task, result.get("solution"))
+            try:
+                with self._result_ready:
+                    if task_id in self._results:
+                        continue
+                remaining = max(1, int(deadline - time.monotonic()))
+                status, result_envelope = self._post(
+                    "/v1/relay/poll", {"waitSeconds": min(15, remaining)},
+                    timeout=min(25, remaining + 5)
+                )
+                if status == 204:
+                    continue
+                result = decrypt_payload(
+                    self.pair_secret, result_envelope, expected_direction="phone_to_node"
+                )
+                self._post(
+                    "/v1/relay/ack", {"messageId": result_envelope["messageId"]}, timeout=20
+                )
+                result_task_id = result.get("taskId")
+                if not isinstance(result_task_id, str) or not result_task_id:
+                    continue
+                with self._result_ready:
+                    self._results[result_task_id] = result
+                    while len(self._results) > 64:
+                        self._results.popitem(last=False)
+                    self._result_ready.notify_all()
+            finally:
+                self._poll_lock.release()
         raise RelayClientError("等待手机验证超时")

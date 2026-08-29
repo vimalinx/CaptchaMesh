@@ -21,7 +21,7 @@ description: 将现有 Agent、浏览器自动化或手机可启动的固定工�
 2. 运行检查器并明确模式：
 
    ```bash
-   python3 .skill/captchamesh-adapter/scripts/inspect_registration.py \
+   captchamesh skill inspect \
      <文件或目录> --mode agent-api --json
    ```
 

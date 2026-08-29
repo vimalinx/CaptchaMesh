@@ -25,6 +25,7 @@ if [ ! -x "$venv_dir/bin/python" ]; then
   python3 -m venv "$venv_dir"
 fi
 "$venv_dir/bin/python" -m pip install --upgrade "$project_dir"
+"$venv_dir/bin/captchamesh" skill install
 
 if [ -e "$launcher" ] && [ ! -L "$launcher" ]; then
   echo "$launcher 已存在且不是符号链接，未覆盖。" >&2
@@ -33,4 +34,5 @@ fi
 ln -sfn "$venv_dir/bin/captchamesh" "$launcher"
 
 echo "CaptchaMesh 已安装：$launcher"
+echo "CaptchaMesh Agent Skill 已安装；可运行 captchamesh skill status 检查。"
 echo "运行 captchamesh start，然后打开终端显示的本机配对链接。"

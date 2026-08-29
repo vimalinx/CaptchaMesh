@@ -2,6 +2,14 @@ plugins {
     id("com.android.application")
 }
 
+fun Project.secretFromEnvironmentOrFile(name: String): String? {
+    val direct = System.getenv(name)
+    if (!direct.isNullOrBlank()) return direct
+    val filePath = System.getenv("${name}_FILE")
+    if (filePath.isNullOrBlank()) return null
+    return file(filePath).readText().trimEnd()
+}
+
 android {
     namespace = "app.captchamesh"
     compileSdk = 35
@@ -10,8 +18,8 @@ android {
         applicationId = "app.captchamesh"
         minSdk = 29
         targetSdk = 35
-        versionCode = 23
-        versionName = "0.19.1"
+        versionCode = 30
+        versionName = "0.19.8"
     }
 
     signingConfigs {
@@ -19,9 +27,9 @@ android {
             val keystorePath = System.getenv("ANDROID_KEYSTORE_PATH")
             if (!keystorePath.isNullOrBlank()) {
                 storeFile = file(keystorePath)
-                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                storePassword = project.secretFromEnvironmentOrFile("ANDROID_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("ANDROID_KEY_ALIAS")
-                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+                keyPassword = project.secretFromEnvironmentOrFile("ANDROID_KEY_PASSWORD")
             }
         }
     }
@@ -40,6 +48,7 @@ android {
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.8.0")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.google.android.material:material:1.14.0")
     implementation("androidx.webkit:webkit:1.17.0")

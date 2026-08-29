@@ -107,6 +107,16 @@ captchamesh config --json
 确认输出包含 `apiBase`、`apiKeyFile` 和 `stateFile`，但不包含 `apiKey`。密钥文件和配对文件的
 权限应为 `0600`，它们的父目录应为 `0700`。
 
+触发一次可控的连接失败后运行：
+
+```bash
+captchamesh logs
+```
+
+确认 JSONL 只包含时间、固定事件、异常类型和代码位置，不包含异常消息、完整网址、Key、Token、
+Cookie 或任务内容；诊断文件权限应为 `0600`，大小不得超过 256 KiB。完成后可运行
+`captchamesh logs --clear`。
+
 ## Android 与配对测试
 
 1. 从 Release 安装 APK，或者安装本机刚构建的 APK。
@@ -115,6 +125,8 @@ captchamesh config --json
 4. 用 App 扫描二维码，允许通知和前台服务权限。
 5. 确认电脑页面显示手机名称和“手机已连接”。
 6. 关闭 App 前台页面，保持后台等待服务运行。
+7. 打开“记录”页点击“复制诊断”，确认有 App/系统版本头且不含配对链接、Key、Token、
+   Cookie、任务正文或答案；点击“清空记录”后再次复制，不应再包含清空前的事件。
 
 非交互启动测试时，将标准输出重定向到文件：
 
@@ -191,11 +203,15 @@ curl --fail --silent https://你的域名/healthz
 
 - [ ] `./tools/test_all.sh --security` 通过。
 - [ ] Android 真机安装、通知、扫码和至少一个人工任务通过。
+- [ ] Android “复制诊断”包含版本和脱敏错误，不包含异常消息或任务敏感内容。
 - [ ] `git status --short` 为空。
 - [ ] `.secrets/`、`.ai/`、`registrations.json`、APK、数据库和账号数据未进入 Git。
 - [ ] `python tools/verify_public_release.py dist` 通过。
-- [ ] Release 中的 APK、wheel、sdist 和 `SHA256SUMS` 属于同一提交。
+- [ ] 已安装 wheel 能从任意用户项目运行 `captchamesh skill inspect`。
+- [ ] Release 中的 APK、wheel、sdist、Hub 包、SPDX SBOM 和 `SHA256SUMS` 属于同一提交。
+- [ ] GitHub build provenance 覆盖 Release 中的全部下载制品。
 - [ ] GitHub Actions 的 Python、Security、Android 和 Package job 全部为绿色。
+- [ ] Release job 明确等待可复用 CI 成功后才创建 GitHub Release。
 
 如果失败，先保留失败命令和最小日志；不要把密钥、Cookie、二维码、完整配对链接或源站地址
 粘贴到公开 Issue。

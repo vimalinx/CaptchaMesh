@@ -38,16 +38,28 @@ build_dir=$test_root/dist
 "$python_bin" -m build --outdir "$build_dir"
 "$python_bin" tools/verify_public_release.py "$build_dir"
 
-echo "[4/8] Installed CLI smoke test"
+echo "[4/8] Installed CLI and Skill smoke test"
 smoke_dir=$test_root/install
-venv_site=$("$python_bin" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')
-"$python_bin" -m pip install --disable-pip-version-check --no-deps \
-  --target "$smoke_dir" "$build_dir"/*.whl >/dev/null
-(
-  cd "$smoke_dir"
-  PYTHONPATH="$smoke_dir:$venv_site" \
-    "$project_dir/$python_bin" -m captchamesh_cli --help >/dev/null
-)
+"$python_bin" -m venv "$smoke_dir/venv"
+"$smoke_dir/venv/bin/pip" install --disable-pip-version-check \
+  "$build_dir"/*.whl >/dev/null
+skill_home=$smoke_dir/codex
+"$smoke_dir/venv/bin/captchamesh" --help >/dev/null
+"$smoke_dir/venv/bin/captchamesh" logs \
+  --state-file "$smoke_dir/state/relay-pairing.json" \
+  | grep -F '暂无本机诊断记录' >/dev/null
+CODEX_HOME="$skill_home" "$smoke_dir/venv/bin/captchamesh" skill install
+CODEX_HOME="$skill_home" "$smoke_dir/venv/bin/captchamesh" skill status
+test -f "$skill_home/skills/captchamesh-adapter/SKILL.md"
+test -f "$skill_home/skills/captchamesh-adapter/references/protocol.md"
+consumer_dir=$smoke_dir/consumer
+mkdir -p "$consumer_dir"
+printf '%s\n' 'from twocaptcha import TwoCaptcha' > "$consumer_dir/captcha.py"
+"$smoke_dir/venv/bin/captchamesh" skill inspect \
+  "$consumer_dir" --mode agent-api --json > "$smoke_dir/inspection.json"
+"$smoke_dir/venv/bin/python" -c \
+  'import json,sys; assert json.load(open(sys.argv[1]))["ready_for_supported_adapter"]' \
+  "$smoke_dir/inspection.json"
 
 echo "[5/8] Android tests, lint and APK"
 (

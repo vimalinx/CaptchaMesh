@@ -21,6 +21,7 @@ import qrcode.image.svg
 from quart import Quart, Response, jsonify, request
 
 import pair_device
+from diagnostic_log import DiagnosticLog
 from challenge_protocol import legacy_result
 from relay_client import RelayClient, RelayClientError
 from twocaptcha_compat import (
@@ -204,21 +205,30 @@ class LocalBridge:
         pairing: PairingManager,
         client_factory: Callable[[Path], RelayClient] = RelayClient,
         setup_token: str | None = None,
+        diagnostics: DiagnosticLog | None = None,
     ) -> None:
         self.state_file = state_file
         self.store = BridgeTaskStore(database)
         self.local_api_key = local_api_key
         self.pairing = pairing
         self.client_factory = client_factory
-        self._solve_lock = asyncio.Lock()
+        self._client_lock = threading.Lock()
+        self._relay_client: RelayClient | None = None
+        self._relay_state_mtime_ns: int | None = None
         self._background: set[asyncio.Task[Any]] = set()
         self.setup_token = setup_token or secrets.token_urlsafe(24)
+        self.diagnostics = diagnostics
         self.app = self._make_app()
 
     def _client(self) -> RelayClient:
         if not self.state_file.is_file():
             raise RelayClientError("手机尚未配对，请先打开本机配对页面")
-        return self.client_factory(self.state_file)
+        state_mtime_ns = self.state_file.stat().st_mtime_ns
+        with self._client_lock:
+            if self._relay_client is None or self._relay_state_mtime_ns != state_mtime_ns:
+                self._relay_client = self.client_factory(self.state_file)
+                self._relay_state_mtime_ns = state_mtime_ns
+            return self._relay_client
 
     def _authorized(self, supplied: Any) -> bool:
         return isinstance(supplied, str) and hmac.compare_digest(
@@ -233,18 +243,19 @@ class LocalBridge:
         return task_id
 
     async def _solve(self, task_id: int, task: dict[str, Any]) -> None:
-        async with self._solve_lock:
-            self.store.set_processing(task_id)
-            try:
-                solution = await asyncio.to_thread(self._client().solve, task)
-            except Exception as exc:
-                code = "ERROR_CAPTCHA_UNSOLVABLE"
-                description = str(exc) or "phone did not complete the task"
-                if isinstance(exc, RelayClientError) and "尚未配对" in description:
-                    code = "ERROR_PHONE_NOT_PAIRED"
-                self.store.set_error(task_id, code, description)
-                return
-            self.store.set_solution(task_id, solution)
+        self.store.set_processing(task_id)
+        try:
+            solution = await asyncio.to_thread(self._client().solve, task)
+        except Exception as exc:
+            if self.diagnostics is not None:
+                self.diagnostics.event("LOCAL_BRIDGE", "TASK_FAILED", exc)
+            code = "ERROR_CAPTCHA_UNSOLVABLE"
+            description = str(exc) or "phone did not complete the task"
+            if isinstance(exc, RelayClientError) and "尚未配对" in description:
+                code = "ERROR_PHONE_NOT_PAIRED"
+            self.store.set_error(task_id, code, description)
+            return
+        self.store.set_solution(task_id, solution)
 
     async def connection_status(self) -> dict[str, Any]:
         if not self.state_file.is_file():
@@ -252,6 +263,8 @@ class LocalBridge:
         try:
             status = await asyncio.to_thread(self._client().status)
         except Exception as exc:
+            if self.diagnostics is not None:
+                self.diagnostics.event("LOCAL_BRIDGE", "STATUS_FAILED", exc)
             return {"paired": False, "hub": self.pairing.hub, "error": str(exc)}
         phone = next(
             (device for device in status.get("devices", []) if device.get("role") == "phone"),
@@ -352,6 +365,8 @@ class LocalBridge:
             try:
                 await asyncio.to_thread(self.pairing.restart)
             except Exception as exc:
+                if self.diagnostics is not None:
+                    self.diagnostics.event("LOCAL_BRIDGE", "PAIRING_FAILED", exc)
                 return jsonify(error=str(exc)), 502
             return jsonify(ok=True)
 

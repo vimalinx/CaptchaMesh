@@ -4,9 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "captchamesh"
-version = "0.19.1"
+version = "0.19.8"
 description = "Personal, endpoint-encrypted CAPTCHA handoff between an Agent and Android"
 readme = "README.md"
+authors = [{name = "Vimalinx"}]
 requires-python = ">=3.11"
 license = "MIT"
 keywords = ["captcha", "android", "human-in-the-loop", "agent"]
@@ -26,6 +27,12 @@ dependencies = [
   "requests==2.34.2",
 ]
 
+[project.urls]
+Homepage = "https://mesh.vimalinx.com"
+Source = "https://github.com/vimalinx/CaptchaMesh"
+Issues = "https://github.com/vimalinx/CaptchaMesh/issues"
+Changelog = "https://github.com/vimalinx/CaptchaMesh/blob/main/CHANGELOG.md"
+
 [project.scripts]
 captchamesh = "captchamesh_cli:main"
 
@@ -36,14 +43,31 @@ py-modules = [
   "captchamesh_cli",
   "captchamesh_client",
   "challenge_protocol",
+  "diagnostic_log",
   "demo_registration",
   "local_bridge",
   "node_agent",
   "pair_device",
   "relay_client",
   "relay_protocol",
+  "skill_manager",
   "twocaptcha_compat",
 ]
 
 [tool.setuptools.packages.find]
 include = ["captchamesh"]
+
+[tool.setuptools.data-files]
+"share/captchamesh/skills/captchamesh-adapter" = [
+  ".skill/captchamesh-adapter/SKILL.md",
+]
+"share/captchamesh/skills/captchamesh-adapter/agents" = [
+  ".skill/captchamesh-adapter/agents/openai.yaml",
+]
+"share/captchamesh/skills/captchamesh-adapter/references" = [
+  ".skill/captchamesh-adapter/references/adapter-workflow.md",
+  ".skill/captchamesh-adapter/references/protocol.md",
+]
+"share/captchamesh/skills/captchamesh-adapter/scripts" = [
+  ".skill/captchamesh-adapter/scripts/inspect_registration.py",
+]

@@ -7,6 +7,8 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.os.IBinder;
+import android.os.PowerManager;
+import android.os.SystemClock;
 
 import androidx.annotation.Nullable;
 import androidx.core.app.NotificationCompat;
@@ -22,10 +24,13 @@ import okhttp3.OkHttpClient;
 
 public final class RelayWatchService extends Service {
     static final String ACTION_OPEN_RELAY = "app.captchamesh.action.OPEN_RELAY";
+    static final String ACTION_QUEUE_CHANGED = "app.captchamesh.action.RELAY_QUEUE_CHANGED";
     private static final int SERVICE_ID = 4201;
     private static final int CHALLENGE_ID = 4202;
     private static final String SERVICE_CHANNEL = "relay_waiting";
     private static final String CHALLENGE_CHANNEL = "relay_captcha_ready";
+    private static final long WAKE_LOCK_TIMEOUT_MS = 10 * 60_000L;
+    private static final long WAKE_LOCK_REFRESH_MS = 8 * 60_000L;
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
     private final OkHttpClient http = new OkHttpClient.Builder()
             .connectTimeout(12, TimeUnit.SECONDS)
@@ -33,13 +38,25 @@ public final class RelayWatchService extends Service {
             .build();
     private volatile boolean stopped;
     private volatile boolean watching;
+    private PowerManager.WakeLock wakeLock;
+    private long wakeLockAcquiredAt;
 
     static void start(Context context) {
         ContextCompat.startForegroundService(context, new Intent(context, RelayWatchService.class));
     }
 
+    static void stop(Context context) {
+        context.stopService(new Intent(context, RelayWatchService.class));
+    }
+
     @Override public void onCreate() {
         super.onCreate();
+        PowerManager power = getSystemService(PowerManager.class);
+        if (power != null) {
+            wakeLock = power.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK, getPackageName() + ":RelayWatch");
+            wakeLock.setReferenceCounted(false);
+        }
         NotificationManager manager = getSystemService(NotificationManager.class);
         NotificationChannel waiting = new NotificationChannel(
                 SERVICE_CHANNEL, "个人 Agent 后台连接", NotificationManager.IMPORTANCE_LOW);
@@ -55,11 +72,14 @@ public final class RelayWatchService extends Service {
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
         RelayStore.Config config = RelayStore.load(this);
         if (config == null) {
+            DiagnosticLog.event(this, "RELAY", "CONFIG_MISSING");
             stopSelf();
             return START_NOT_STICKY;
         }
+        DiagnosticLog.event(this, "RELAY", "WATCH_STARTED");
         stopped = false;
-        startForeground(SERVICE_ID, waiting("已加密连接，后台等待任务"));
+        startForeground(SERVICE_ID, waiting(backgroundStatusText()));
+        ensureWakeLock();
         if (!watching) {
             watching = true;
             executor.submit(this::watch);
@@ -71,16 +91,13 @@ public final class RelayWatchService extends Service {
         int failures = 0;
         while (!stopped && !Thread.currentThread().isInterrupted()) {
             try {
+                ensureWakeLock();
                 RelayStore.Config config = RelayStore.load(this);
                 if (config == null) break;
-                if (!getSharedPreferences("cm", MODE_PRIVATE)
-                        .getString(RelayStore.PREF_PENDING, "").isEmpty()) {
-                    sleep(1500);
-                    continue;
-                }
                 Http.Result result = Http.post(http, config.hub + "/v1/relay/poll",
                         new JSONObject().put("waitSeconds", 15).toString(),
                         "Device " + config.token);
+                if (failures > 0) DiagnosticLog.event(this, "RELAY", "CONNECTION_RECOVERED");
                 failures = 0;
                 if (result.code == 204 || result.body.isEmpty()) continue;
                 JSONObject envelope = new JSONObject(result.body);
@@ -88,19 +105,50 @@ public final class RelayWatchService extends Service {
                         || !"node_to_phone".equals(envelope.getString("direction"))) {
                     throw new IllegalArgumentException("unexpected relay message");
                 }
-                // This is still endpoint-encrypted ciphertext; plaintext is only opened in the UI.
-                getSharedPreferences("cm", MODE_PRIVATE).edit()
-                        .putString(RelayStore.PREF_PENDING, envelope.toString()).apply();
-                notifyReady();
+                // The queue contains endpoint-encrypted ciphertext. ACK only after durable local storage.
+                RelayStore.EnqueueResult queued = RelayStore.enqueueEnvelope(this, envelope);
+                if (queued == RelayStore.EnqueueResult.FULL) {
+                    DiagnosticLog.event(this, "RELAY", "QUEUE_FULL");
+                    getSystemService(NotificationManager.class).notify(
+                            SERVICE_ID, waiting("手机任务队列已满，等待你处理"));
+                    sleep(1500);
+                    continue;
+                }
+                Http.post(http, config.hub + "/v1/relay/ack",
+                        new JSONObject().put("messageId", envelope.getString("messageId")).toString(),
+                        "Device " + config.token);
+                if (queued == RelayStore.EnqueueResult.ENQUEUED) {
+                    int pending = RelayStore.pendingCount(this);
+                    notifyReady(pending);
+                    sendBroadcast(new Intent(ACTION_QUEUE_CHANGED).setPackage(getPackageName()));
+                    MainActivity.notifyRelayQueueChanged();
+                }
                 failures = 0;
             } catch (Exception exception) {
                 failures++;
+                if (failures == 1 || failures % 6 == 0) {
+                    DiagnosticLog.error(this, "RELAY", "POLL_FAILED", exception);
+                }
                 getSystemService(NotificationManager.class).notify(
                         SERVICE_ID, waiting("连接暂时中断，后台重试中"));
                 sleep(Math.min(10_000, 1000L * failures));
             }
         }
         watching = false;
+    }
+
+    private void ensureWakeLock() {
+        if (wakeLock == null) return;
+        long now = SystemClock.elapsedRealtime();
+        if (wakeLock.isHeld() && now - wakeLockAcquiredAt < WAKE_LOCK_REFRESH_MS) return;
+        if (wakeLock.isHeld()) wakeLock.release();
+        wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS);
+        wakeLockAcquiredAt = now;
+    }
+
+    private void releaseWakeLock() {
+        if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
+        wakeLockAcquiredAt = 0;
     }
 
     private android.app.Notification waiting(String text) {
@@ -114,14 +162,25 @@ public final class RelayWatchService extends Service {
                 .setContentIntent(openIntent()).build();
     }
 
-    private void notifyReady() {
+    private String backgroundStatusText() {
+        PowerManager power = getSystemService(PowerManager.class);
+        if (power != null && power.isIgnoringBatteryOptimizations(getPackageName())) {
+            if ("HONOR".equalsIgnoreCase(android.os.Build.MANUFACTURER)) {
+                return "已加密连接；请在荣耀管家确认应用启动管理";
+            }
+            return "已加密连接，后台等待任务";
+        }
+        return "已加密连接；请在 App 设置中开启后台保护";
+    }
+
+    private void notifyReady(int pending) {
         if (!NotificationPreferences.taskAlertsEnabled(this)) return;
         getSystemService(NotificationManager.class).notify(CHALLENGE_ID,
                 new NotificationCompat.Builder(this, CHALLENGE_CHANNEL)
                         .setSmallIcon(R.drawable.ic_notification)
                         .setColor(Tints.ACCENT)
                         .setContentTitle("个人 Agent 需要你验证")
-                        .setContentText("点此在手机上手动完成")
+                        .setContentText(pending + " 个 Agent 任务等待处理")
                         .setPriority(NotificationCompat.PRIORITY_HIGH)
                         .setCategory(NotificationCompat.CATEGORY_ALARM)
                         .setAutoCancel(true)
@@ -144,8 +203,10 @@ public final class RelayWatchService extends Service {
     @Nullable @Override public IBinder onBind(Intent intent) { return null; }
 
     @Override public void onDestroy() {
+        DiagnosticLog.event(this, "RELAY", "WATCH_STOPPED");
         stopped = true;
         executor.shutdownNow();
+        releaseWakeLock();
         stopForeground(STOP_FOREGROUND_REMOVE);
         super.onDestroy();
     }

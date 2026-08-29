@@ -5,23 +5,30 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
-
 jobs:
+  quality:
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: quality
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+      - uses: actions/setup-java@dd06d9cba3e5552c54d9f8ea23572deb30010f7c # v6.0.0
         with:
           distribution: temurin
           java-version: "17"
-      - uses: gradle/actions/wrapper-validation@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
-      - uses: gradle/actions/setup-gradle@ed408507eac070d1f99cc633dbcf757c94c7933a # v4
+      - uses: gradle/actions/wrapper-validation@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
+      - uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6.3.0
       - run: python -m pip install --disable-pip-version-check build
       - name: Verify release metadata and signing configuration
         env:
@@ -37,6 +44,17 @@ jobs:
           test -n "$ANDROID_KEY_PASSWORD"
       - run: python -m build
       - run: python tools/verify_public_release.py dist
+      - name: Verify release wheel installs the Agent Skill
+        run: |
+          python -m venv "$RUNNER_TEMP/package-smoke"
+          "$RUNNER_TEMP/package-smoke/bin/pip" install dist/*.whl
+          CODEX_HOME="$RUNNER_TEMP/codex" "$RUNNER_TEMP/package-smoke/bin/captchamesh" skill install
+          CODEX_HOME="$RUNNER_TEMP/codex" "$RUNNER_TEMP/package-smoke/bin/captchamesh" skill status --json
+          mkdir "$RUNNER_TEMP/consumer-project"
+          printf '%s\n' 'from twocaptcha import TwoCaptcha' > "$RUNNER_TEMP/consumer-project/captcha.py"
+          "$RUNNER_TEMP/package-smoke/bin/captchamesh" skill inspect "$RUNNER_TEMP/consumer-project" --mode agent-api --json > "$RUNNER_TEMP/consumer-project/report.json"
+          "$RUNNER_TEMP/package-smoke/bin/python" -c 'import json,sys; assert json.load(open(sys.argv[1]))["ready_for_supported_adapter"]' "$RUNNER_TEMP/consumer-project/report.json"
+          test -f "$RUNNER_TEMP/codex/skills/captchamesh-adapter/SKILL.md"
       - run: python tools/build_hub_bundle.py --output dist
       - name: Decode Android release keystore
         env:
@@ -54,7 +72,23 @@ jobs:
       - name: Prepare release files
         run: |
           cp app-src/app/build/outputs/apk/release/app-release.apk "dist/captchamesh-${GITHUB_REF_NAME}.apk"
-          (cd dist && sha256sum *.whl *.tar.gz *.apk) > dist/SHA256SUMS
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/captchamesh-${{ github.ref_name }}.spdx.json
+          syft-version: v1.51.1
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Verify SPDX SBOM public boundary
+        run: python tools/verify_sbom.py "dist/captchamesh-${GITHUB_REF_NAME}.spdx.json"
+      - name: Generate release checksums
+        run: (cd dist && sha256sum *.whl *.tar.gz *.apk *.spdx.json) > dist/SHA256SUMS
+      - name: Attest release build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}

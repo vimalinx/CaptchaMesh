@@ -30,7 +30,7 @@ Agent，并让脚本读取 `CAPTCHAMESH_URL`、`CAPTCHAMESH_API_KEY` 和
 
 ## 验证顺序
 
-1. 运行 `inspect_registration.py --mode <模式>`，确认协议、题型和残留主机。
+1. 运行 `captchamesh skill inspect <文件或目录> --mode <模式> --json`，确认协议、题型和残留主机。
 2. 执行目标程序自身测试，至少覆盖请求构造、未就绪、错误和结果解析。
 3. 检查 CaptchaMesh 健康状态、错误 Key、错误 ID 和不支持题型。
 4. Agent API 模式在没有活动工作流时完成一次任务；手机工作流模式只启动一个白名单项目完成一次任务。

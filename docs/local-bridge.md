@@ -70,10 +70,28 @@ captchamesh config --json
 Android 后台服务收到后弹出提醒。`registrations.json`、`node_agent.py` 和 `runId` 只属于可选的
 [手机工作流模式](batch-integration.md#模式二手机工作流可选)。
 
+## 排查本机桥错误
+
+查看保存在本机状态目录中的脱敏诊断：
+
+```bash
+captchamesh logs
+```
+
+每行是一个 JSON 对象，只含 UTC 时间、固定组件/事件、异常类型和代码文件、函数、行号。
+文件权限固定为 `0600`，超过 256 KiB 时自动丢弃较旧记录。诊断不会保存异常消息、完整路径、
+Key、Token、Cookie、网址或任务内容。
+
+问题解决后清空：
+
+```bash
+captchamesh logs --clear
+```
+
 ## 生命周期
 
 - 每次 `/createTask` 或 `/in.php` 立即返回本机数字任务 ID。
-- 单个手机邮箱的任务在电脑端串行发送，避免并发轮询误领其他任务结果。
+- 单个手机邮箱可并发接收多个 Agent 请求；共享客户端按 `taskId` 分流乱序结果，手机端将密文任务持久排队，人工界面一次只聚焦一个任务。
 - 手机未完成时返回 `processing` 或 `CAPCHA_NOT_READY`。
 - 答案只保存在权限为 `0600` 的本机数据库中，并在完成或失败 10 分钟后清理。
 - 本机桥重启会把未完成任务明确标记为 `ERROR_BRIDGE_RESTARTED`，不会假装成功。

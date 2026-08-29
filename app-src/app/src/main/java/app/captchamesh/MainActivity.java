@@ -1,7 +1,13 @@
 package app.captchamesh;
 
+import android.animation.ValueAnimator;
 import android.Manifest;
+import android.content.BroadcastReceiver;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
@@ -12,6 +18,8 @@ import android.graphics.Typeface;
 import android.graphics.drawable.RippleDrawable;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.PowerManager;
 import android.security.keystore.KeyGenParameterSpec;
 import android.security.keystore.KeyProperties;
@@ -25,11 +33,13 @@ import android.view.ViewParent;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.DrawableRes;
+import androidx.activity.result.ActivityResultLauncher;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
@@ -47,6 +57,8 @@ import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.switchmaterial.SwitchMaterial;
 import com.google.android.material.textfield.TextInputEditText;
 import com.google.android.material.textfield.TextInputLayout;
+import com.journeyapps.barcodescanner.ScanContract;
+import com.journeyapps.barcodescanner.ScanOptions;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -60,6 +72,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -74,6 +87,9 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     private static final String API_KEY_IV = "api_key_iv";
     private static final String LOCAL_RECORDS_CIPHERTEXT = "local_records_ciphertext";
     private static final String LOCAL_RECORDS_IV = "local_records_iv";
+    private static final String TASK_INTAKE_PAUSED = "task_intake_paused";
+    private static final String LAST_REGISTRATION_ID = "last_registration_id";
+    private static final String LAST_REGISTRATION_NAME = "last_registration_name";
     private static final String KEYSTORE_ALIAS = "captchamesh_api_key_v1";
     private static final String STATE_SELECTED_PAGE = "selected_page";
     private static final String DEFAULT_BROKER = "https://mesh.vimalinx.com";
@@ -86,8 +102,49 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
             "geetest_v3", "geetest_v4", "datadome", "amazon_waf"
     };
 
+    private enum TaskPanelState {
+        DISCONNECTED,
+        IDLE,
+        PAUSED,
+        STARTING_WORKFLOW,
+        WORKFLOW_RUNNING,
+        RELAY_LOADING,
+        WAITING_HUMAN,
+        RESULT_SENT,
+        RECONNECTING,
+        REFRESHING,
+        STOPPING_WORKFLOW,
+        COMPLETED,
+        STOPPED,
+        INTERRUPTED,
+        FAILED
+    }
+
+    private enum TaskSource {
+        NONE,
+        WORKFLOW,
+        AGENT
+    }
+
+    private static final class AgentTaskSummary {
+        final String messageId;
+        final String title;
+        final String detail;
+
+        AgentTaskSummary(String messageId, String title, String detail) {
+            this.messageId = messageId;
+            this.title = title;
+            this.detail = detail;
+        }
+    }
+
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService workflowExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService relayExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService relayQueueExecutor = Executors.newSingleThreadExecutor();
     private final ExecutorService diagnosticExecutor = Executors.newSingleThreadExecutor();
+    private final ReentrantLock humanChallengeLock = new ReentrantLock(true);
+    private final Handler relayUiHandler = new Handler(Looper.getMainLooper());
     private final OkHttpClient http = new OkHttpClient.Builder()
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(35, TimeUnit.SECONDS)
@@ -108,6 +165,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     private TextView connectionState;
     private TextView brokerSummary;
     private TextView relayStatus;
+    private MaterialButton pairingScanButton;
     private TextView registrationSummary;
     private TextView runBadge;
     private TextView runState;
@@ -124,12 +182,27 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     private ScrollView taskScroll;
     private LinearLayout bottomNavigation;
     private MaterialButton refreshButton;
+    private MaterialButton continueTaskButton;
+    private MaterialButton rerunWorkflowButton;
+    private MaterialButton pauseTaskButton;
+    private MaterialButton stopWorkflowButton;
+    private MaterialButton taskRefreshButton;
+    private LinearLayout primaryTaskActions;
+    private LinearLayout secondaryTaskActions;
+    private LinearLayout progressDisclosureRow;
+    private LinearLayout progressHistoryList;
+    private LinearLayout agentTaskList;
+    private TextView agentTaskSummary;
+    private ProgressBar progressSpinner;
+    private View progressDot;
+    private TextView progressCurrent;
+    private ImageView progressDisclosureIcon;
     private MaterialButton diagnosticButton;
     private TextView diagnosticSummary;
+    private TextView batteryProtectionStatus;
+    private MaterialButton backgroundProtectionButton;
     private final List<TextView> diagnosticBadges = new ArrayList<>();
     private final List<TextView> diagnosticDetails = new ArrayList<>();
-    private final List<TextView> timelineBadges = new ArrayList<>();
-    private final List<TextView> timelineDetails = new ArrayList<>();
 
     private Solver solver;
     private volatile boolean active;
@@ -138,12 +211,54 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     private volatile String configuredBaseUrl = DEFAULT_BROKER;
     private volatile String configuredAuthorization = "";
     static volatile boolean foregroundVisible;
+    private static volatile MainActivity foregroundActivity;
     private int selectedPageId = R.id.nav_task;
     private String pendingRegistrationId;
     private String pendingRegistrationName;
-    private volatile int timelineStage;
+    private String lastRegistrationId;
+    private String lastRegistrationName;
+    private volatile boolean taskIntakePaused;
+    private volatile boolean taskRefreshInFlight;
     private volatile boolean relayProcessing;
+    private volatile String activeRelayMessageId = "";
+    private long agentQueueRevision;
+    private boolean relayReceiverRegistered;
+    private boolean advanceRelayAfterChallenge;
+    private int observedRelayCount = -1;
+    private final Runnable relayQueuePulse = new Runnable() {
+        @Override public void run() {
+            if (destroyed || foregroundActivity != MainActivity.this) return;
+            int pending = RelayStore.pendingCount(MainActivity.this);
+            if (pending != observedRelayCount) {
+                observedRelayCount = pending;
+                refreshAgentTaskQueue();
+                if (pending > 0) processPendingRelay();
+            }
+            relayUiHandler.postDelayed(this, 1000);
+        }
+    };
+    private volatile TaskPanelState taskPanelState = TaskPanelState.DISCONNECTED;
+    private volatile TaskSource taskSource = TaskSource.NONE;
+    private long taskStateRevision;
     private boolean pendingRelayPermission;
+    private boolean progressExpanded;
+    private String currentProgressEntry = "";
+    private final List<String> progressHistoryEntries = new ArrayList<>();
+    private final BroadcastReceiver relayQueueReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context context, Intent intent) {
+            refreshAgentTaskQueue();
+            processPendingRelay();
+        }
+    };
+    private final ActivityResultLauncher<ScanOptions> pairingScanner = registerForActivityResult(
+            new ScanContract(), result -> {
+                String contents = result.getContents();
+                if (contents == null) {
+                    Toast.makeText(this, "已取消扫码", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                handleScannedPairing(contents);
+            });
 
     @Override
     protected void onCreate(Bundle state) {
@@ -152,11 +267,27 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
             selectedPageId = state.getInt(STATE_SELECTED_PAGE, R.id.nav_task);
         }
         configureWindow();
+        loadConnectionConfiguration();
+        SharedPreferences preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE);
+        taskIntakePaused = preferences.getBoolean(TASK_INTAKE_PAUSED, false);
+        lastRegistrationId = preferences.getString(LAST_REGISTRATION_ID, "");
+        lastRegistrationName = preferences.getString(LAST_REGISTRATION_NAME, "");
+        if (!storedRunId().isEmpty()) {
+            taskPanelState = taskIntakePaused
+                    ? TaskPanelState.PAUSED : TaskPanelState.RECONNECTING;
+            taskSource = TaskSource.WORKFLOW;
+        } else if (taskIntakePaused) {
+            taskPanelState = TaskPanelState.PAUSED;
+        } else if (RelayStore.load(this) != null) {
+            taskPanelState = TaskPanelState.IDLE;
+        }
         solver = new Solver(this, this);
         setContentView(buildUi());
         handleIntent(getIntent());
         refreshRegistrations();
         resumeStoredRun();
+        refreshAgentTaskQueue();
+        updateTaskControls();
     }
 
     private void configureWindow() {
@@ -173,7 +304,9 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     @Override
     protected void onResume() {
         super.onResume();
+        refreshBatteryProtectionStatus();
         if (!active) refreshRegistrations();
+        refreshAgentTaskQueue();
         processPendingRelay();
     }
 
@@ -181,9 +314,20 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     protected void onStart() {
         super.onStart();
         foregroundVisible = true;
+        foregroundActivity = this;
+        observedRelayCount = -1;
+        relayUiHandler.removeCallbacks(relayQueuePulse);
+        relayUiHandler.post(relayQueuePulse);
+        if (!relayReceiverRegistered) {
+            ContextCompat.registerReceiver(this, relayQueueReceiver,
+                    new IntentFilter(RelayWatchService.ACTION_QUEUE_CHANGED),
+                    ContextCompat.RECEIVER_NOT_EXPORTED);
+            relayReceiverRegistered = true;
+        }
         resumeStoredRun();
+        refreshAgentTaskQueue();
         processPendingRelay();
-        if (RelayStore.load(this) != null
+        if (!taskIntakePaused && RelayStore.load(this) != null
                 && (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU
                 || ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
                 == PackageManager.PERMISSION_GRANTED)) {
@@ -194,6 +338,12 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     @Override
     protected void onStop() {
         foregroundVisible = false;
+        if (foregroundActivity == this) foregroundActivity = null;
+        relayUiHandler.removeCallbacks(relayQueuePulse);
+        if (relayReceiverRegistered) {
+            unregisterReceiver(relayQueueReceiver);
+            relayReceiverRegistered = false;
+        }
         super.onStop();
     }
 
@@ -222,6 +372,15 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 processPendingRelay();
             }
         }
+    }
+
+    static void notifyRelayQueueChanged() {
+        MainActivity activity = foregroundActivity;
+        if (activity == null || activity.destroyed) return;
+        activity.runOnUiThread(() -> {
+            activity.refreshAgentTaskQueue();
+            activity.processPendingRelay();
+        });
     }
 
     private View buildUi() {
@@ -329,14 +488,112 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
     private View buildTaskPage() {
         LinearLayout page = pageContent();
-        page.addView(pageHeading("Agent 任务", "电脑通过本机 API 自动发送，手机只负责人工验证"));
+        page.addView(pageHeading("Agent 任务", "当前任务与操作"));
         addTop(page, buildRunCard(), 12);
+        addTop(page, buildAgentTaskQueue(), 12);
         challengeCard = buildChallengeCard();
         challengeCard.setVisibility(View.GONE);
         addTop(page, challengeCard, 12);
-        addTop(page, buildCapabilityCard(), 12);
         taskScroll = scrollPage(page);
         return taskScroll;
+    }
+
+    private LinearLayout buildAgentTaskQueue() {
+        LinearLayout card = card();
+        LinearLayout header = sectionHeader(
+                R.drawable.ic_list,
+                text("并发任务", 16, Tints.TEXT, true),
+                text("任务同时进入队列，人工验证按顺序聚焦", 12, Tints.TEXT_MUTED, false));
+        card.addView(header);
+
+        agentTaskSummary = text("当前没有 Agent 任务", 12, Tints.TEXT_SECONDARY, true);
+        agentTaskSummary.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        addTop(card, agentTaskSummary, 12);
+
+        agentTaskList = new LinearLayout(this);
+        agentTaskList.setOrientation(LinearLayout.VERTICAL);
+        addTop(card, agentTaskList, 4);
+        renderAgentTaskQueue(new ArrayList<>());
+        return card;
+    }
+
+    private void refreshAgentTaskQueue() {
+        if (agentTaskList == null || destroyed) return;
+        JSONArray queued = RelayStore.pendingEnvelopes(this);
+        RelayStore.Config config = RelayStore.load(this);
+        long revision = ++agentQueueRevision;
+        relayQueueExecutor.submit(() -> {
+            List<AgentTaskSummary> summaries = new ArrayList<>();
+            for (int index = 0; index < queued.length(); index++) {
+                JSONObject envelope = queued.optJSONObject(index);
+                if (envelope == null) continue;
+                String messageId = envelope.optString("messageId", "");
+                String title = "加密任务";
+                String detail = "等待安全读取";
+                if (config != null) {
+                    try {
+                        JSONObject payload = RelayCrypto.decrypt(
+                                config.secret, envelope, "node_to_phone");
+                        CaptchaTask task = new CaptchaTask(payload);
+                        title = friendlyCaptcha(task.type);
+                        detail = task.host();
+                    } catch (Exception ignored) {
+                        detail = "无法读取任务信息";
+                    }
+                }
+                summaries.add(new AgentTaskSummary(messageId, title, detail));
+            }
+            runOnUiThread(() -> {
+                if (revision != agentQueueRevision || destroyed) return;
+                renderAgentTaskQueue(summaries);
+            });
+        });
+    }
+
+    private void renderAgentTaskQueue(List<AgentTaskSummary> tasks) {
+        if (agentTaskList == null || agentTaskSummary == null) return;
+        agentTaskList.removeAllViews();
+        int processing = 0;
+        for (AgentTaskSummary task : tasks) {
+            boolean current = !activeRelayMessageId.isEmpty()
+                    && activeRelayMessageId.equals(task.messageId);
+            if (current) processing++;
+
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setMinimumHeight(dp(52));
+            row.setPadding(0, dp(6), 0, dp(6));
+
+            LinearLayout copy = new LinearLayout(this);
+            copy.setOrientation(LinearLayout.VERTICAL);
+            TextView title = text(task.title, 14, Tints.TEXT, true);
+            title.setSingleLine(true);
+            title.setEllipsize(TextUtils.TruncateAt.END);
+            copy.addView(title, row());
+            TextView detail = text(task.detail, 11, Tints.TEXT_MUTED, false);
+            detail.setSingleLine(true);
+            detail.setEllipsize(TextUtils.TruncateAt.END);
+            copy.addView(detail, row());
+            row.addView(copy, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+            row.addView(statusPill(current ? "处理中" : "等待中",
+                    current ? Tints.WARNING : Tints.TEXT_SECONDARY,
+                    current ? Tints.WARNING_SOFT : Tints.SURFACE_MUTED), wrapEnd());
+            if (agentTaskList.getChildCount() > 0) {
+                agentTaskList.addView(sectionDivider(0));
+            }
+            agentTaskList.addView(row, row());
+        }
+        int waiting = Math.max(0, tasks.size() - processing);
+        String summary = tasks.isEmpty()
+                ? "当前没有 Agent 任务"
+                : tasks.size() + " 个任务：" + processing + " 个处理中，"
+                        + waiting + " 个等待";
+        agentTaskSummary.setText(summary);
+        agentTaskSummary.setContentDescription("Agent 任务队列，" + summary);
+        agentTaskList.setVisibility(tasks.isEmpty() ? View.GONE : View.VISIBLE);
     }
 
     private View buildDiagnosticsPage() {
@@ -446,12 +703,112 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         explanation.setLineSpacing(dp(2), 1.08f);
         addTop(card, explanation, 4);
 
+        batteryProtectionStatus = text("", 11, Tints.TEXT_MUTED, false);
+        batteryProtectionStatus.setLineSpacing(dp(2), 1.08f);
+        batteryProtectionStatus.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        addTop(card, batteryProtectionStatus, 8);
+        refreshBatteryProtectionStatus();
+
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
         MaterialButton systemNotifications = secondaryButton("系统通知设置", R.drawable.ic_settings);
+        systemNotifications.setContentDescription("打开 CaptchaMesh 系统通知设置");
         systemNotifications.setOnClickListener(view -> startActivity(new Intent(
                 android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
                 .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName())));
-        addTop(card, systemNotifications, 12);
+        actions.addView(systemNotifications, new LinearLayout.LayoutParams(0, dp(48), 1));
+
+        backgroundProtectionButton = secondaryButton("开启后台保护", R.drawable.ic_settings);
+        backgroundProtectionButton.setContentDescription("请求允许 CaptchaMesh 在后台持续接收任务");
+        backgroundProtectionButton.setOnClickListener(view -> requestBackgroundProtection());
+        LinearLayout.LayoutParams protectionParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        protectionParams.leftMargin = dp(8);
+        actions.addView(backgroundProtectionButton, protectionParams);
+        addTop(card, actions, 12);
+        refreshBatteryProtectionStatus();
         return card;
+    }
+
+    private boolean batteryOptimizationExempt() {
+        PowerManager power = getSystemService(PowerManager.class);
+        return power != null && power.isIgnoringBatteryOptimizations(getPackageName());
+    }
+
+    private boolean isHonorDevice() {
+        return "HONOR".equalsIgnoreCase(Build.MANUFACTURER);
+    }
+
+    private void refreshBatteryProtectionStatus() {
+        if (batteryProtectionStatus == null) return;
+        if (batteryOptimizationExempt()) {
+            if (isHonorDevice()) {
+                batteryProtectionStatus.setText("Android 后台保护已开启；荣耀还需确认应用启动管理");
+                batteryProtectionStatus.setTextColor(Tints.WARNING);
+                batteryProtectionStatus.setContentDescription(
+                        "Android 后台保护已开启，荣耀应用启动管理仍需确认");
+                if (backgroundProtectionButton != null) {
+                    backgroundProtectionButton.setText("打开荣耀管家");
+                    backgroundProtectionButton.setContentDescription("打开荣耀系统管家并进入应用启动管理");
+                    backgroundProtectionButton.setEnabled(true);
+                }
+            } else {
+                batteryProtectionStatus.setText("系统后台保护已开启");
+                batteryProtectionStatus.setTextColor(Tints.ACCENT);
+                batteryProtectionStatus.setContentDescription("后台保护状态，已开启");
+                if (backgroundProtectionButton != null) {
+                    backgroundProtectionButton.setText("后台保护已开启");
+                    backgroundProtectionButton.setEnabled(false);
+                }
+            }
+        } else {
+            batteryProtectionStatus.setText("后台保护未开启；荣耀等系统退到后台后可能冻结连接");
+            batteryProtectionStatus.setTextColor(Tints.WARNING);
+            batteryProtectionStatus.setContentDescription("后台保护状态，未开启，后台任务提醒可能延迟");
+            if (backgroundProtectionButton != null) {
+                backgroundProtectionButton.setText("开启后台保护");
+                backgroundProtectionButton.setContentDescription(
+                        "请求允许 CaptchaMesh 在后台持续接收任务");
+                backgroundProtectionButton.setEnabled(true);
+            }
+        }
+    }
+
+    private void requestBackgroundProtection() {
+        if (batteryOptimizationExempt()) {
+            if (isHonorDevice()) openHonorStartupManager();
+            else refreshBatteryProtectionStatus();
+            return;
+        }
+        Intent intent = new Intent(
+                android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                .setData(android.net.Uri.parse("package:" + getPackageName()));
+        if (intent.resolveActivity(getPackageManager()) == null) {
+            intent = new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+        }
+        if (intent.resolveActivity(getPackageManager()) == null) {
+            intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(android.net.Uri.parse("package:" + getPackageName()));
+        }
+        startActivity(intent);
+        Toast.makeText(this, "请在系统界面确认允许 CaptchaMesh 后台运行", Toast.LENGTH_LONG).show();
+    }
+
+    private void openHonorStartupManager() {
+        Intent intent = getPackageManager().getLaunchIntentForPackage(
+                "com.hihonor.systemmanager");
+        if (intent == null) {
+            intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS)
+                    .setData(android.net.Uri.parse("package:" + getPackageName()));
+        }
+        try {
+            startActivity(intent);
+        } catch (SecurityException | android.content.ActivityNotFoundException exception) {
+            DiagnosticLog.error(this, "SETTINGS", "HONOR_MANAGER_OPEN_FAILED", exception);
+            startActivity(new Intent(android.provider.Settings.ACTION_SETTINGS));
+        }
+        Toast.makeText(this,
+                "进入应用启动管理，找到 CaptchaMesh，关闭自动管理并允许三项后台活动",
+                Toast.LENGTH_LONG).show();
     }
 
     private LinearLayout buildConnectionCard() {
@@ -468,19 +825,8 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 "默认连接公共 Hub；本机调试可填写 ADB reverse 地址。",
                 false);
         brokerInput = (TextInputEditText) brokerField.getEditText();
-        SharedPreferences preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE);
-        String savedBroker = preferences.getString("broker", DEFAULT_BROKER);
-        if (!preferences.getBoolean(BROKER_DOMAIN_MIGRATION, false)) {
-            if ("http://127.0.0.1:8890".equals(savedBroker)) {
-                savedBroker = DEFAULT_BROKER;
-            }
-            preferences.edit()
-                    .putString("broker", savedBroker)
-                    .putBoolean(BROKER_DOMAIN_MIGRATION, true)
-                    .apply();
-        }
-        brokerInput.setText(savedBroker);
-        configuredBaseUrl = savedBroker.replaceAll("/+$", "");
+        brokerInput.setText(configuredBaseUrl);
+        updateBrokerSummary();
         addTop(card, brokerField, 16);
 
         apiKeyField = inputField(
@@ -488,18 +834,29 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 "仅加密保存在此手机；清空后点保存可移除。",
                 true);
         apiKeyInput = (TextInputEditText) apiKeyField.getEditText();
-        String savedApiKey = loadSavedApiKey();
-        apiKeyInput.setText(savedApiKey);
-        configuredAuthorization = savedApiKey.isEmpty() ? "" : "Bearer " + savedApiKey;
+        apiKeyInput.setText(configuredApiKey());
         addTop(card, apiKeyField, 12);
 
         RelayStore.Config relay = RelayStore.load(this);
         relayStatus = text(relay == null
-                        ? "个人 Agent：未配对 · 用系统相机扫描电脑二维码"
+                        ? "个人 Agent：未配对"
                         : "个人 Agent：已端到端配对 · " + relay.nodeName,
                 12, relay == null ? Tints.TEXT_MUTED : Tints.ACCENT, false);
         relayStatus.setContentDescription(relayStatus.getText());
         addTop(card, relayStatus, 14);
+
+        pairingScanButton = secondaryButton(
+                relay == null ? "扫码配对" : "重新扫码配对", R.drawable.ic_qr_scan);
+        pairingScanButton.setContentDescription(
+                relay == null ? "扫描电脑上的 CaptchaMesh 配对二维码" : "重新扫描 CaptchaMesh 配对二维码");
+        pairingScanButton.setOnClickListener(view -> launchPairingScanner());
+        addTop(card, pairingScanButton, 12);
+
+        TextView pairingHelp = text(
+                "打开应用内相机，只识别电脑页面上的 CaptchaMesh 一次性二维码。",
+                11, Tints.TEXT_MUTED, false);
+        pairingHelp.setLineSpacing(dp(2), 1.08f);
+        addTop(card, pairingHelp, 4);
 
         MaterialButton apply = primaryButton("保存并刷新", R.drawable.ic_refresh);
         apply.setOnClickListener(view -> {
@@ -513,76 +870,199 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
     private LinearLayout buildRunCard() {
         LinearLayout card = card();
-        TextView subtitle = text("Agent API 与可选电脑工作流", 12, Tints.TEXT_MUTED, false);
+        TextView subtitle = text("只显示正在处理的内容", 12, Tints.TEXT_MUTED, false);
         LinearLayout header = sectionHeader(
                 R.drawable.ic_activity,
-                text("当前运行", 16, Tints.TEXT, true),
+                text("当前任务", 16, Tints.TEXT, true),
                 subtitle);
-        runBadge = statusPill("待命", Tints.TEXT_SECONDARY, Tints.SURFACE_MUTED);
+        int initialForeground = taskStateForeground(taskPanelState);
+        runBadge = statusPill(taskStateBadge(taskPanelState),
+                initialForeground, taskStateBackground(taskPanelState));
         header.addView(runBadge, wrapEnd());
         card.addView(header);
 
-        runState = text("等待已配对的电脑 Agent 通过 API 提交 CAPTCHA", 15, Tints.TEXT_SECONDARY, false);
+        runState = text(initialTaskDetail(), 19, Tints.TEXT, true);
         runState.setLineSpacing(dp(2), 1.08f);
         addTop(card, runState, 14);
 
-        addTop(card, sectionDivider(0), 16);
-        addTop(card, sectionHeader(
-                R.drawable.ic_history,
-                text("任务时间线", 16, Tints.TEXT, true),
-                text("从启动到交付，只保留一条清晰进度线", 12, Tints.TEXT_MUTED, false)), 16);
-        String[] labels = {
-                "电脑提交任务",
-                "加密发送到手机",
-                "等待人工处理",
-                "验证结果回传",
-                "Agent 继续运行"
-        };
-        String[] details = {
-                "等待 Agent API 或你主动启动的工作流",
-                "端到端加密传输尚未开始",
-                "挑战尚未到达手机",
-                "等待你手动完成并加密回传",
-                "等待电脑收到结果并恢复原任务"
-        };
-        for (int index = 0; index < labels.length; index++) {
-            if (index == 0) {
-                addTop(card, timelineRow(index + 1, labels[index], details[index]), 12);
-            } else {
-                card.addView(sectionDivider(dp(44)));
-                card.addView(timelineRow(index + 1, labels[index], details[index]));
-            }
-        }
+        addTop(card, buildProgressDisclosure(), 12);
+
+        primaryTaskActions = new LinearLayout(this);
+        primaryTaskActions.setOrientation(LinearLayout.HORIZONTAL);
+        continueTaskButton = primaryButton("继续接题", R.drawable.ic_play);
+        continueTaskButton.setContentDescription("继续接收新的人工验证任务");
+        continueTaskButton.setOnClickListener(view -> continueTaskIntake());
+        primaryTaskActions.addView(
+                continueTaskButton, new LinearLayout.LayoutParams(0, dp(48), 1));
+        rerunWorkflowButton = secondaryButton("重跑该工作流", R.drawable.ic_play);
+        rerunWorkflowButton.setContentDescription("重新启动刚刚结束的白名单工作流");
+        rerunWorkflowButton.setOnClickListener(view -> rerunLastWorkflow());
+        LinearLayout.LayoutParams repeatParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        repeatParams.leftMargin = dp(8);
+        primaryTaskActions.addView(rerunWorkflowButton, repeatParams);
+        addTop(card, primaryTaskActions, 12);
+
+        secondaryTaskActions = new LinearLayout(this);
+        secondaryTaskActions.setOrientation(LinearLayout.HORIZONTAL);
+        pauseTaskButton = secondaryButton("暂停接题", R.drawable.ic_pause);
+        pauseTaskButton.setContentDescription("暂停接收新的人工验证任务");
+        pauseTaskButton.setOnClickListener(view -> pauseTaskIntake());
+        secondaryTaskActions.addView(
+                pauseTaskButton, new LinearLayout.LayoutParams(0, dp(48), 1));
+        stopWorkflowButton = secondaryButton("停止工作流", R.drawable.ic_stop);
+        stopWorkflowButton.setContentDescription("停止电脑端当前工作流");
+        stopWorkflowButton.setOnClickListener(view -> confirmStopCurrentWorkflow());
+        LinearLayout.LayoutParams stopParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        stopParams.leftMargin = dp(8);
+        secondaryTaskActions.addView(stopWorkflowButton, stopParams);
+        taskRefreshButton = secondaryButton("刷新", R.drawable.ic_refresh);
+        taskRefreshButton.setContentDescription("只读取当前任务状态");
+        taskRefreshButton.setOnClickListener(view -> refreshCurrentTask());
+        LinearLayout.LayoutParams refreshParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        refreshParams.leftMargin = dp(8);
+        secondaryTaskActions.addView(taskRefreshButton, refreshParams);
+        addTop(card, secondaryTaskActions, 8);
         return card;
     }
 
-    private LinearLayout timelineRow(int number, String label, String detail) {
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(11), 0, dp(11));
+    private LinearLayout buildProgressDisclosure() {
+        LinearLayout block = new LinearLayout(this);
+        block.setOrientation(LinearLayout.VERTICAL);
 
-        TextView numberView = statusPill(String.valueOf(number), Tints.TEXT_MUTED, Tints.SURFACE_MUTED);
-        numberView.setMinWidth(dp(34));
-        numberView.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
-        row.addView(numberView, new LinearLayout.LayoutParams(dp(34), dp(34)));
+        progressDisclosureRow = new LinearLayout(this);
+        progressDisclosureRow.setGravity(Gravity.CENTER_VERTICAL);
+        progressDisclosureRow.setMinimumHeight(dp(48));
+        progressDisclosureRow.setPadding(dp(12), dp(8), dp(10), dp(8));
+        progressDisclosureRow.setClickable(true);
+        progressDisclosureRow.setFocusable(true);
+        progressDisclosureRow.setBackground(Tints.rounded(Tints.SURFACE_MUTED, dp(12)));
+        progressDisclosureRow.setForeground(new RippleDrawable(
+                Tints.ripple(), null, Tints.rounded(Color.WHITE, dp(12))));
 
-        LinearLayout labels = new LinearLayout(this);
-        labels.setOrientation(LinearLayout.VERTICAL);
-        labels.addView(text(label, 13, Tints.TEXT, true));
-        TextView detailView = text(detail, 11, Tints.TEXT_MUTED, false);
-        detailView.setLineSpacing(dp(1), 1.05f);
-        labels.addView(detailView, row());
-        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+        FrameLayout indicator = new FrameLayout(this);
+        progressSpinner = new ProgressBar(this, null, android.R.attr.progressBarStyleSmall);
+        progressSpinner.setIndeterminate(true);
+        progressSpinner.getIndeterminateDrawable().setTint(Tints.ACCENT);
+        progressSpinner.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        FrameLayout.LayoutParams spinnerParams = new FrameLayout.LayoutParams(dp(20), dp(20));
+        spinnerParams.gravity = Gravity.CENTER;
+        indicator.addView(progressSpinner, spinnerParams);
+
+        progressDot = new View(this);
+        progressDot.setBackground(Tints.rounded(
+                taskStateForeground(taskPanelState), dp(99)));
+        progressDot.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        FrameLayout.LayoutParams dotParams = new FrameLayout.LayoutParams(dp(8), dp(8));
+        dotParams.gravity = Gravity.CENTER;
+        indicator.addView(progressDot, dotParams);
+        progressDisclosureRow.addView(indicator, new LinearLayout.LayoutParams(dp(24), dp(24)));
+
+        currentProgressEntry = taskProgressText(taskPanelState, initialTaskDetail());
+        progressCurrent = text(currentProgressEntry, 12, Tints.TEXT_SECONDARY, true);
+        progressCurrent.setSingleLine(true);
+        progressCurrent.setEllipsize(TextUtils.TruncateAt.END);
+        progressCurrent.setAccessibilityLiveRegion(View.ACCESSIBILITY_LIVE_REGION_POLITE);
+        LinearLayout.LayoutParams currentParams = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-        labelParams.leftMargin = dp(10);
-        labelParams.rightMargin = dp(8);
-        row.addView(labels, labelParams);
+        currentParams.leftMargin = dp(10);
+        currentParams.rightMargin = dp(8);
+        progressDisclosureRow.addView(progressCurrent, currentParams);
 
-        TextView badge = statusPill("等待", Tints.TEXT_MUTED, Tints.SURFACE_MUTED);
-        row.addView(badge, wrapEnd());
-        timelineBadges.add(badge);
-        timelineDetails.add(detailView);
-        return row;
+        progressDisclosureIcon = new ImageView(this);
+        progressDisclosureIcon.setImageResource(R.drawable.ic_expand_more);
+        progressDisclosureIcon.setImageTintList(Tints.iconTint(Tints.TEXT_SECONDARY));
+        progressDisclosureIcon.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        progressDisclosureRow.addView(
+                progressDisclosureIcon, new LinearLayout.LayoutParams(dp(20), dp(20)));
+        progressDisclosureRow.setOnClickListener(view -> toggleProgressHistory());
+        block.addView(progressDisclosureRow, row());
+
+        progressHistoryList = new LinearLayout(this);
+        progressHistoryList.setOrientation(LinearLayout.VERTICAL);
+        progressHistoryList.setPadding(dp(12), dp(4), dp(12), 0);
+        progressHistoryList.setVisibility(View.GONE);
+        LinearLayout.LayoutParams historyParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        historyParams.topMargin = dp(4);
+        block.addView(progressHistoryList, historyParams);
+
+        updateProgressIndicator(
+                taskStateIsActive(taskPanelState), taskStateForeground(taskPanelState));
+        updateProgressDisclosureDescription();
+        return block;
+    }
+
+    private void toggleProgressHistory() {
+        progressExpanded = !progressExpanded;
+        renderProgressHistory();
+        progressHistoryList.setVisibility(progressExpanded ? View.VISIBLE : View.GONE);
+        progressDisclosureIcon.setImageResource(
+                progressExpanded ? R.drawable.ic_expand_less : R.drawable.ic_expand_more);
+        updateProgressDisclosureDescription();
+    }
+
+    private void updateProgressDisclosureDescription() {
+        if (progressDisclosureRow == null) return;
+        progressDisclosureRow.setContentDescription(
+                (progressExpanded ? "收起" : "展开") + "进度记录，当前进度，" + currentProgressEntry);
+        progressDisclosureRow.setSelected(progressExpanded);
+    }
+
+    private void publishProgress(TaskPanelState state, String value, int foreground) {
+        if (progressCurrent == null) return;
+        String next = taskProgressText(state, value);
+        if (!next.equals(currentProgressEntry)) {
+            if (!currentProgressEntry.isEmpty()
+                    && !"等待新任务".equals(currentProgressEntry)) {
+                progressHistoryEntries.add(0, currentProgressEntry);
+                while (progressHistoryEntries.size() > 4) {
+                    progressHistoryEntries.remove(progressHistoryEntries.size() - 1);
+                }
+            }
+            currentProgressEntry = next;
+            progressCurrent.setText(next);
+            if (progressExpanded) renderProgressHistory();
+        }
+        updateProgressIndicator(taskStateIsActive(state), foreground);
+        updateProgressDisclosureDescription();
+    }
+
+    private void updateProgressIndicator(boolean activeState, int foreground) {
+        if (progressSpinner == null || progressDot == null) return;
+        boolean animate = activeState && ValueAnimator.areAnimatorsEnabled();
+        progressSpinner.setVisibility(animate ? View.VISIBLE : View.GONE);
+        progressDot.setVisibility(animate ? View.GONE : View.VISIBLE);
+        progressDot.setBackground(Tints.rounded(foreground, dp(99)));
+    }
+
+    private void renderProgressHistory() {
+        if (progressHistoryList == null) return;
+        progressHistoryList.removeAllViews();
+        if (progressHistoryEntries.isEmpty()) {
+            progressHistoryList.addView(text("暂无更早进度", 11, Tints.TEXT_MUTED, false));
+            return;
+        }
+        for (String entry : progressHistoryEntries) {
+            LinearLayout item = new LinearLayout(this);
+            item.setGravity(Gravity.CENTER_VERTICAL);
+            item.setMinimumHeight(dp(32));
+            View dot = new View(this);
+            dot.setBackground(Tints.rounded(Tints.TEXT_MUTED, dp(99)));
+            dot.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            item.addView(dot, new LinearLayout.LayoutParams(dp(6), dp(6)));
+            TextView label = text(entry, 11, Tints.TEXT_MUTED, false);
+            LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+            labelParams.leftMargin = dp(10);
+            item.addView(label, labelParams);
+            progressHistoryList.addView(item);
+        }
+    }
+
+    private void resetProgressHistory() {
+        progressHistoryEntries.clear();
+        currentProgressEntry = "";
+        if (progressHistoryList != null) renderProgressHistory();
     }
 
     private LinearLayout diagnosticRow(int number, String label, String detail) {
@@ -637,10 +1117,6 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 R.drawable.ic_history,
                 text("最近活动", 16, Tints.TEXT, true),
                 logSubtitle);
-        MaterialButton clear = secondaryButton("清空", 0);
-        clear.setContentDescription("清空本机运行记录");
-        clear.setOnClickListener(view -> confirmClearLog());
-        header.addView(clear, new LinearLayout.LayoutParams(dp(72), dp(48)));
         card.addView(header);
 
         String savedRecords = loadEncryptedPreference(
@@ -660,45 +1136,29 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(164));
         logParams.topMargin = dp(16);
         card.addView(logScroll, logParams);
-        return card;
-    }
 
-    private LinearLayout buildCapabilityCard() {
-        LinearLayout card = card();
-        card.addView(sectionHeader(
-                R.drawable.ic_shield,
-                text("接题能力", 16, Tints.TEXT, true),
-                text("14 类人工挑战 · 按任务自动选择界面", 12, Tints.TEXT_MUTED, false)));
-        addTop(card, capabilityGroup(
-                "原生操作",
-                new String[]{"图片文字", "坐标点击", "图片网格", "旋转校正"},
-                Tints.ACCENT, Tints.ACCENT_SOFT), 14);
-        addTop(card, capabilityGroup(
-                "安全网页",
-                new String[]{"Turnstile", "hCaptcha", "reCAPTCHA v2/v3", "网页验证", "FunCaptcha",
-                        "GeeTest v3/v4", "DataDome", "Amazon WAF"},
-                Tints.INFO, Tints.INFO_SOFT), 12);
-        TextView note = text(
-                "Agent API 任务会自动到达；工作流任务仅在你主动启动后接收。Token 与 Cookie 不写入记录。",
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        MaterialButton copy = secondaryButton("复制诊断", 0);
+        copy.setContentDescription("复制脱敏诊断日志");
+        copy.setOnClickListener(view -> copyDiagnosticLog());
+        actions.addView(copy, new LinearLayout.LayoutParams(0, dp(48), 1));
+        MaterialButton clear = secondaryButton("清空记录", 0);
+        clear.setContentDescription("清空本机运行记录和诊断日志");
+        clear.setOnClickListener(view -> confirmClearLog());
+        LinearLayout.LayoutParams clearParams = new LinearLayout.LayoutParams(0, dp(48), 1);
+        clearParams.leftMargin = dp(8);
+        actions.addView(clear, clearParams);
+        addTop(card, actions, 12);
+
+        TextView privacy = text(
+                "诊断仅含异常类型、App 栈与设备版本，不含 Key、Token、Cookie、网址或任务内容。",
                 11, Tints.TEXT_MUTED, false);
-        note.setLineSpacing(dp(2), 1.08f);
-        addTop(card, note, 12);
+        privacy.setLineSpacing(dp(2), 1.08f);
+        addTop(card, privacy, 8);
         return card;
     }
 
-    private LinearLayout capabilityGroup(
-            String label, String[] values, int foreground, int background) {
-        LinearLayout group = new LinearLayout(this);
-        group.setOrientation(LinearLayout.VERTICAL);
-        group.addView(text(label, 10, Tints.TEXT_SECONDARY, true));
-        ChipGroup chips = new ChipGroup(this);
-        chips.setChipSpacingHorizontal(dp(6));
-        chips.setChipSpacingVertical(dp(6));
-        chips.setSingleLine(false);
-        for (String value : values) chips.addView(chip(value, foreground, background));
-        addTop(group, chips, 6);
-        return group;
-    }
 
     private void runDiagnostics() {
         if (diagnosticButton == null || !diagnosticButton.isEnabled()) return;
@@ -777,7 +1237,10 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 publishDiagnostic(3, "需关注", "任务到达提醒已在 App 设置中关闭", 1);
                 warnings++;
             } else if (!unrestricted) {
-                publishDiagnostic(3, "需关注", "通知已开启；系统电池优化可能延迟后台提醒", 1);
+                publishDiagnostic(3, "需处理", "后台保护未开启；荣耀等系统可能冻结连接，请在设置页确认开启", 1);
+                warnings++;
+            } else if (isHonorDevice()) {
+                publishDiagnostic(3, "需验证", "Android 后台保护已开启；请确认荣耀应用启动管理并完成一次后台到题测试", 1);
                 warnings++;
             } else {
                 publishDiagnostic(3, "正常", "通知已开启，且未受系统电池优化限制", 2);
@@ -822,7 +1285,6 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
     private void refreshRegistrations() {
         if (destroyed || active || brokerInput == null) return;
-        saveBroker();
         brokerField.setError(null);
         apiKeyField.setError(null);
         if (apiAuthorization().isEmpty()) {
@@ -1016,8 +1478,12 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     }
 
     private void startRegistration(String registrationId, String name) {
-        if (active) {
+        if (active || !storedRunId().isEmpty()) {
             Toast.makeText(this, "当前已有工作流在运行", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (challengeVisible()) {
+            Toast.makeText(this, "请先完成当前人工验证", Toast.LENGTH_SHORT).show();
             return;
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
@@ -1037,14 +1503,25 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
     private void startRegistrationWithNotifications(String registrationId, String name) {
         saveBroker();
+        resetProgressHistory();
+        taskIntakePaused = false;
+        lastRegistrationId = registrationId;
+        lastRegistrationName = name;
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
+                .putBoolean(TASK_INTAKE_PAUSED, false)
+                .putString(LAST_REGISTRATION_ID, registrationId)
+                .putString(LAST_REGISTRATION_NAME, name)
+                .apply();
+        if (RelayStore.load(this) != null) startRelayNotifications();
         active = true;
-        setTimelineStage(1, name + " 已由你手动启动");
+        taskSource = TaskSource.WORKFLOW;
         setInputsEnabled(false);
-        setRunState("启动中", name + " · 正在启动电脑流程", Tints.WARNING, Tints.WARNING_SOFT);
+        setTaskState(TaskPanelState.STARTING_WORKFLOW, TaskSource.WORKFLOW,
+                name + " · 正在启动电脑流程");
         appendLog("启动 " + name);
         selectPage(R.id.nav_task);
         taskScroll.post(() -> taskScroll.smoothScrollTo(0, 0));
-        executor.submit(() -> runRegistration(registrationId, name));
+        workflowExecutor.submit(() -> runRegistration(registrationId, name));
     }
 
     @Override
@@ -1054,7 +1531,8 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         if (requestCode != REQUEST_NOTIFICATIONS) return;
         if (pendingRelayPermission) {
             pendingRelayPermission = false;
-            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            if (!taskIntakePaused && grantResults.length > 0
+                    && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 RelayWatchService.start(this);
             } else {
                 Toast.makeText(this, "未开启通知；打开 App 时仍可处理加密任务", Toast.LENGTH_LONG).show();
@@ -1086,19 +1564,27 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                     apiAuthorization()).body);
             activeRunId = started.getJSONObject("run").getString("runId");
             rememberActiveRun(activeRunId, name);
+            if (taskIntakePaused || destroyed || !active) {
+                active = false;
+                if (!destroyed) {
+                    uiTaskState(TaskPanelState.PAUSED, TaskSource.WORKFLOW,
+                            name + " · 接题已暂停，电脑工作流继续运行");
+                }
+                return;
+            }
             CaptchaWatchService.start(this, activeRunId, name);
-            uiTimelineStage(2, "电脑正在准备浏览器与注册环境");
-            uiRunState("运行中", name + " · 电脑正在注册，等待 CAPTCHA",
-                    Tints.INFO, Tints.INFO_SOFT);
+            uiTaskState(TaskPanelState.WORKFLOW_RUNNING, TaskSource.WORKFLOW,
+                    name + " · 电脑正在运行");
             terminal = monitorRegistration(name);
         } catch (Exception exception) {
+            DiagnosticLog.error(this, "WORKFLOW", "START_FAILED", exception);
             if (activeRunId == null) {
-                uiTimelineTerminal("failed", "启动电脑流程失败：" + concise(exception));
-                uiRunState("失败", name + " · " + concise(exception), Tints.DANGER, Tints.DANGER_SOFT);
+                uiTaskState(TaskPanelState.FAILED, TaskSource.WORKFLOW,
+                        name + " · " + concise(exception));
                 appendLogOnUi("启动失败：" + concise(exception));
             } else if (!destroyed) {
-                uiRunState("后台等待", name + " · 手机连接暂时中断，通知服务仍在重试",
-                        Tints.WARNING, Tints.WARNING_SOFT);
+                uiTaskState(TaskPanelState.RECONNECTING, TaskSource.WORKFLOW,
+                        name + " · 手机连接暂时中断，通知服务仍在重试");
                 appendLogOnUi("前台监听中断，后台通知仍在运行");
             }
         } finally {
@@ -1115,23 +1601,10 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                         Http.get(http, baseUrl() + "/v1/runs/" + activeRunId, apiAuthorization()).body);
                 String status = runResponse.getJSONObject("run").getString("status");
                 if (isTerminal(status)) {
-                    uiTimelineTerminal(status, name + " · " + statusText(status));
-                    int[] tone = statusTone(status);
-                    uiRunState(statusText(status), name + " · " + statusText(status), tone[0], tone[1]);
+                    uiTaskState(taskStateForRunStatus(status), TaskSource.WORKFLOW,
+                            name + " · " + statusText(status));
                     appendLogOnUi(name + " 运行结束：" + statusText(status));
                     return true;
-                }
-
-                JSONObject taskCounts = runResponse.optJSONObject("tasks");
-                int pending = taskCounts == null ? 0 : taskCounts.optInt("pending", 0);
-                int leased = taskCounts == null ? 0 : taskCounts.optInt("leased", 0);
-                int solved = taskCounts == null ? 0 : taskCounts.optInt("solved", 0);
-                if (solved > 0) {
-                    uiTimelineStage(4, "CAPTCHA 已回传，电脑正在保存最终交付");
-                } else if (pending + leased > 0 || "captcha".equals(status)) {
-                    uiTimelineStage(3, "CAPTCHA 已到达，等待你在手机手动完成");
-                } else if ("running".equals(status) || "starting".equals(status)) {
-                    uiTimelineStage(2, "电脑流程运行中，尚未出现 CAPTCHA");
                 }
 
                 if (!foregroundVisible) {
@@ -1147,25 +1620,24 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                         "Worker " + workerToken);
                 if (polled.code == 204 || polled.body.isEmpty()) continue;
                 CaptchaTask task = new CaptchaTask(new JSONObject(polled.body));
-                if (!foregroundVisible || destroyed) {
+                if (!active || taskIntakePaused || !foregroundVisible || destroyed) {
                     returnTaskForForeground(task, workerToken);
                     continue;
                 }
-                uiRunState("待验证", name + " · 请在手机完成 " + friendlyCaptcha(task.type),
-                        Tints.WARNING, Tints.WARNING_SOFT);
-                uiTimelineStage(3, friendlyCaptcha(task.type) + " 已打开，等待人工提交");
-                appendLogOnUi("收到 " + task.type + " · " + task.host());
-                submitSolution(task, workerToken);
-                uiTimelineStage(4, "人工验证结果已回传，电脑继续运行");
-                uiRunState("已回传", name + " · CAPTCHA 已完成，电脑继续运行",
-                        Tints.ACCENT, Tints.ACCENT_SOFT);
+                appendLogOnUi("收到 " + task.type + " · 已进入人工验证队列");
+                submitSolution(task, workerToken, name);
+                uiTaskState(TaskPanelState.RESULT_SENT, TaskSource.WORKFLOW,
+                        name + " · CAPTCHA 已完成，电脑继续运行");
                 failures = 0;
             } catch (Exception exception) {
                 if (destroyed || !active) break;
                 failures++;
+                if (failures == 1 || failures % 5 == 0) {
+                    DiagnosticLog.error(this, "WORKFLOW", "MONITOR_FAILED", exception);
+                }
                 workerToken = "";
-                uiRunState("后台等待", name + " · 连接中断，正在重试",
-                        Tints.WARNING, Tints.WARNING_SOFT);
+                uiTaskState(TaskPanelState.RECONNECTING, TaskSource.WORKFLOW,
+                        name + " · 连接中断，正在重试");
                 if (failures == 1 || failures % 5 == 0) {
                     appendLogOnUi("监听重试：" + concise(exception));
                 }
@@ -1184,6 +1656,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
             if (!destroyed) runOnUiThread(() -> {
                 setInputsEnabled(true);
                 challengeCard.setVisibility(View.GONE);
+                updateTaskControls();
                 refreshRegistrations();
             });
         } else if (destroyed) {
@@ -1207,18 +1680,226 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
 
     private void resumeStoredRun() {
         if (active || destroyed || pageHost == null) return;
-        String runId = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
-                .getString(CaptchaWatchService.PREF_ACTIVE_RUN_ID, "");
+        String runId = storedRunId();
         String name = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
                 .getString(CaptchaWatchService.PREF_ACTIVE_RUN_NAME, "电脑工作流");
         if (runId.isEmpty()) return;
-        active = true;
         activeRunId = runId;
         setInputsEnabled(false);
-        setRunState("后台等待", name + " · 正在恢复本次任务监听", Tints.INFO, Tints.INFO_SOFT);
-        setTimelineStage(2, "已恢复用户启动的 run，正在读取当前阶段");
+        taskSource = TaskSource.WORKFLOW;
+        if (taskIntakePaused) {
+            setTaskState(TaskPanelState.PAUSED, TaskSource.WORKFLOW,
+                    name + " · 接题已暂停，电脑工作流继续运行");
+            return;
+        }
+        active = true;
+        setTaskState(TaskPanelState.RECONNECTING, TaskSource.WORKFLOW,
+                name + " · 正在恢复本次任务监听");
         CaptchaWatchService.start(this, runId, name);
-        executor.submit(() -> finishRegistrationMonitor(monitorRegistration(name)));
+        workflowExecutor.submit(() -> finishRegistrationMonitor(monitorRegistration(name)));
+    }
+
+    private String storedRunId() {
+        return getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .getString(CaptchaWatchService.PREF_ACTIVE_RUN_ID, "");
+    }
+
+    private void continueTaskIntake() {
+        if (challengeVisible()) return;
+        if (taskPanelState == TaskPanelState.DISCONNECTED) {
+            selectPage(R.id.nav_settings);
+            Toast.makeText(this, "请先扫码配对个人 Agent", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (taskStateIsTerminal(taskPanelState)) {
+            returnTaskPanelToIdle();
+            return;
+        }
+        if (taskPanelState != TaskPanelState.PAUSED) return;
+        taskIntakePaused = false;
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
+                .putBoolean(TASK_INTAKE_PAUSED, false).apply();
+
+        String runId = storedRunId();
+        if (!runId.isEmpty()) {
+            activeRunId = runId;
+            resumeStoredRun();
+        } else {
+            if (RelayStore.load(this) != null) startRelayNotifications();
+            if (RelayStore.pendingCount(this) == 0) {
+                setTaskState(RelayStore.load(this) == null
+                                ? TaskPanelState.DISCONNECTED : TaskPanelState.IDLE,
+                        TaskSource.NONE,
+                        RelayStore.load(this) == null ? "尚未配对个人 Agent" : "正在接收新任务");
+            } else {
+                processPendingRelay();
+            }
+        }
+        appendLog("继续接题");
+    }
+
+    private void rerunLastWorkflow() {
+        if (challengeVisible()) return;
+        if (!taskStateIsTerminal(taskPanelState) || taskSource != TaskSource.WORKFLOW) return;
+        if (lastRegistrationId == null || lastRegistrationId.isEmpty()) {
+            Toast.makeText(this, "没有可重跑的工作流", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (active || !storedRunId().isEmpty()) {
+            Toast.makeText(this, "请先完成当前工作流", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        startRegistration(lastRegistrationId,
+                lastRegistrationName == null || lastRegistrationName.isEmpty()
+                        ? "电脑工作流" : lastRegistrationName);
+    }
+
+    private void pauseTaskIntake() {
+        if (challengeVisible() || taskPanelState != TaskPanelState.IDLE) return;
+        taskIntakePaused = true;
+        getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
+                .putBoolean(TASK_INTAKE_PAUSED, true).apply();
+        CaptchaWatchService.stop(this);
+        RelayWatchService.stop(this);
+        setTaskState(TaskPanelState.PAUSED, TaskSource.NONE, "已暂停接收新任务");
+        appendLog("暂停接题");
+    }
+
+    private void refreshCurrentTask() {
+        if (challengeVisible() || taskRefreshInFlight) return;
+        SharedPreferences preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE);
+        String runId = storedRunId();
+        if (runId.isEmpty()) {
+            refreshAgentTaskQueue();
+            Toast.makeText(this, "Agent 任务队列已刷新", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        taskRefreshInFlight = true;
+        String name = preferences.getString(CaptchaWatchService.PREF_ACTIVE_RUN_NAME, "电脑工作流");
+        TaskPanelState previousState = taskPanelState;
+        TaskSource previousSource = taskSource;
+        String previousDetail = runState.getText().toString();
+        setTaskState(TaskPanelState.REFRESHING, TaskSource.WORKFLOW,
+                name + " · 正在读取当前状态");
+        long refreshRevision = taskStateRevision;
+        diagnosticExecutor.submit(() -> {
+            try {
+                JSONObject response = new JSONObject(Http.get(
+                        http, baseUrl() + "/v1/runs/" + runId, apiAuthorization()).body);
+                JSONObject run = response.getJSONObject("run");
+                String status = run.getString("status");
+                JSONObject tasks = response.optJSONObject("tasks");
+                int waiting = tasks == null ? 0
+                        : tasks.optInt("pending", 0) + tasks.optInt("leased", 0);
+                runOnUiThread(() -> {
+                    if (taskStateRevision != refreshRevision) return;
+                    if (isTerminal(status)) {
+                        reconcileTerminalRun(runId);
+                        setTaskState(taskStateForRunStatus(status), TaskSource.WORKFLOW,
+                                name + " · " + statusText(status));
+                        return;
+                    }
+                    if (taskIntakePaused) {
+                        setTaskState(TaskPanelState.PAUSED, TaskSource.WORKFLOW,
+                                name + (waiting > 0
+                                        ? " · 有验证等待处理" : " · 接题已暂停，电脑工作流继续运行"));
+                    } else if (waiting > 0 || "captcha".equals(status)) {
+                        setTaskState(TaskPanelState.WAITING_HUMAN, TaskSource.WORKFLOW,
+                                name + " · 有 CAPTCHA 等待处理");
+                    } else {
+                        setTaskState(taskStateForRunStatus(status), TaskSource.WORKFLOW,
+                                name + " · " + statusText(status));
+                    }
+                });
+            } catch (Exception exception) {
+                DiagnosticLog.error(this, "WORKFLOW", "REFRESH_FAILED", exception);
+                runOnUiThread(() -> {
+                    if (taskStateRevision != refreshRevision) return;
+                    setTaskState(previousState, previousSource, previousDetail);
+                    Toast.makeText(this, "刷新失败：" + concise(exception), Toast.LENGTH_LONG).show();
+                });
+            } finally {
+                taskRefreshInFlight = false;
+                runOnUiThread(this::updateTaskControls);
+            }
+        });
+    }
+
+    private void confirmStopCurrentWorkflow() {
+        if (challengeVisible() || taskRefreshInFlight) return;
+        String runId = storedRunId();
+        if (runId.isEmpty()) {
+            Toast.makeText(this, "当前没有可停止的电脑工作流", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("停止电脑工作流？")
+                .setMessage("电脑端当前流程会结束，已经完成的步骤不会撤销。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("停止工作流", (dialog, which) -> stopCurrentWorkflow(runId))
+                .show();
+    }
+
+    private void stopCurrentWorkflow(String runId) {
+        if (!runId.equals(storedRunId())) return;
+        active = false;
+        CaptchaWatchService.stop(this);
+        String name = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .getString(CaptchaWatchService.PREF_ACTIVE_RUN_NAME, "电脑工作流");
+        setTaskState(TaskPanelState.STOPPING_WORKFLOW, TaskSource.WORKFLOW,
+                name + " · 正在停止");
+        executor.submit(() -> {
+            try {
+                Http.post(http, baseUrl() + "/v1/runs/" + android.net.Uri.encode(runId) + "/stop",
+                        "{}", apiAuthorization());
+                runOnUiThread(() -> {
+                    if (!runId.equals(storedRunId())) return;
+                    reconcileTerminalRun(runId);
+                    setTaskState(TaskPanelState.STOPPED, TaskSource.WORKFLOW,
+                            name + " · 已停止");
+                    appendLog("已停止 " + name);
+                });
+            } catch (Exception exception) {
+                DiagnosticLog.error(this, "WORKFLOW", "STOP_FAILED", exception);
+                runOnUiThread(() -> {
+                    if (!runId.equals(storedRunId())) return;
+                    setTaskState(taskIntakePaused
+                                    ? TaskPanelState.PAUSED : TaskPanelState.RECONNECTING,
+                            TaskSource.WORKFLOW,
+                            name + " · 停止失败，仍在监视");
+                    Toast.makeText(this, "停止失败：" + concise(exception), Toast.LENGTH_LONG).show();
+                    resumeStoredRun();
+                });
+            }
+        });
+    }
+
+    private void reconcileTerminalRun(String runId) {
+        if (!runId.equals(storedRunId())) return;
+        active = false;
+        activeRunId = null;
+        clearStoredRun();
+        CaptchaWatchService.stop(this);
+        setInputsEnabled(true);
+        if (challengeCard != null) challengeCard.setVisibility(View.GONE);
+    }
+
+    private void returnTaskPanelToIdle() {
+        taskSource = TaskSource.NONE;
+        setTaskState(taskIntakePaused
+                        ? TaskPanelState.PAUSED
+                        : RelayStore.load(this) == null
+                                ? TaskPanelState.DISCONNECTED : TaskPanelState.IDLE,
+                TaskSource.NONE,
+                taskIntakePaused ? "已暂停接收新任务"
+                        : RelayStore.load(this) == null
+                                ? "尚未配对个人 Agent" : "正在接收新任务");
+        if (!taskIntakePaused) processPendingRelay();
+    }
+
+    private boolean challengeVisible() {
+        return challengeCard != null && challengeCard.getVisibility() == View.VISIBLE;
     }
 
     private void returnTaskForForeground(CaptchaTask task, String workerToken) throws Exception {
@@ -1254,7 +1935,8 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 .getString("workerToken");
     }
 
-    private void submitSolution(CaptchaTask task, String workerToken) throws Exception {
+    private void submitSolution(CaptchaTask task, String workerToken, String workflowName)
+            throws Exception {
         try {
             Map<String, Bitmap> assets = new HashMap<>();
             for (String name : task.assetNames()) {
@@ -1266,7 +1948,8 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 if (bitmap == null) throw new IllegalStateException("challenge_asset_invalid");
                 assets.put(name, bitmap);
             }
-            Solver.Solution solved = solver.solve(task, assets);
+            Solver.Solution solved = solveWithHumanFocus(task, assets, TaskSource.WORKFLOW,
+                    workflowName + " · 请在手机完成 " + friendlyCaptcha(task.type));
             JSONObject body = new JSONObject()
                     .put("taskId", task.id)
                     .put("status", "ready")
@@ -1284,6 +1967,19 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
             Http.post(http, baseUrl() + "/v1/workers/submit", body.toString(),
                     "Worker " + workerToken);
             throw exception;
+        }
+    }
+
+    private Solver.Solution solveWithHumanFocus(
+            CaptchaTask task, Map<String, Bitmap> assets, TaskSource source, String detail)
+            throws Exception {
+        humanChallengeLock.lockInterruptibly();
+        try {
+            taskSource = source;
+            uiTaskState(TaskPanelState.WAITING_HUMAN, source, detail);
+            return solver.solve(task, assets);
+        } finally {
+            humanChallengeLock.unlock();
         }
     }
 
@@ -1306,11 +2002,14 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         challengeTitle.setText(getString(
                 R.string.challenge_title, friendlyCaptcha(task.type), task.host()));
         challengeSubtitle.setText(task.structured()
-                ? "仅显示题目与必要操作；可撤销后再提交"
+                ? "完成题目后提交"
                 : (task.type.equals("webview")
-                        ? "兼容模式：在受限网页区域手动完成"
-                        : "仅加载挑战组件，不打开目标站完整页面"));
+                        ? "在下方手动完成验证"
+                        : "完成验证后提交"));
+        setTaskState(TaskPanelState.WAITING_HUMAN, taskSource,
+                friendlyCaptcha(task.type) + " · " + task.host());
         challengeCard.setVisibility(View.VISIBLE);
+        updateTaskControls();
         selectPage(R.id.nav_task);
         taskScroll.post(() -> taskScroll.smoothScrollTo(0, challengeCard.getTop()));
     }
@@ -1319,6 +2018,11 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     public void clearChallenge(View challenge) {
         challengeHost.removeAllViews();
         challengeCard.setVisibility(View.GONE);
+        updateTaskControls();
+        if (advanceRelayAfterChallenge) {
+            advanceRelayAfterChallenge = false;
+            challengeCard.post(this::processPendingRelay);
+        }
     }
 
     private void setInputsEnabled(boolean enabled) {
@@ -1328,6 +2032,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         for (MaterialButton button : startButtons) {
             button.setEnabled(enabled && Boolean.TRUE.equals(button.getTag()));
         }
+        updateTaskControls();
     }
 
     private void saveBroker() {
@@ -1336,18 +2041,47 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
             configuredBaseUrl = broker.replaceAll("/+$", "");
             getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
                     .putString("broker", configuredBaseUrl).apply();
-            brokerSummary.setText(getString(
-                    R.string.broker_summary,
-                    configuredBaseUrl.replaceFirst("^https?://", ""),
-                    configuredBaseUrl.contains("127.0.0.1")
-                            ? "ADB 本机通道"
-                            : (configuredBaseUrl.contains("mesh.vimalinx.com")
-                                    ? "默认 Hub"
-                                    : "网络连接")));
+            updateBrokerSummary();
         }
         String key = apiKeyInput == null ? "" : apiKeyInput.getText().toString();
         configuredAuthorization = key.isEmpty() ? "" : "Bearer " + key;
         saveApiKey(key);
+    }
+
+    private void loadConnectionConfiguration() {
+        SharedPreferences preferences = getSharedPreferences(PREFERENCES, MODE_PRIVATE);
+        String savedBroker = preferences.getString("broker", DEFAULT_BROKER);
+        if (!preferences.getBoolean(BROKER_DOMAIN_MIGRATION, false)) {
+            if ("http://127.0.0.1:8890".equals(savedBroker)) {
+                savedBroker = DEFAULT_BROKER;
+            }
+            preferences.edit()
+                    .putString("broker", savedBroker)
+                    .putBoolean(BROKER_DOMAIN_MIGRATION, true)
+                    .apply();
+        }
+        configuredBaseUrl = savedBroker.replaceAll("/+$", "");
+        String savedApiKey = loadSavedApiKey();
+        configuredAuthorization = savedApiKey.isEmpty() ? "" : "Bearer " + savedApiKey;
+    }
+
+    private String configuredApiKey() {
+        String prefix = "Bearer ";
+        return configuredAuthorization.startsWith(prefix)
+                ? configuredAuthorization.substring(prefix.length())
+                : "";
+    }
+
+    private void updateBrokerSummary() {
+        if (brokerSummary == null) return;
+        brokerSummary.setText(getString(
+                R.string.broker_summary,
+                configuredBaseUrl.replaceFirst("^https?://", ""),
+                configuredBaseUrl.contains("127.0.0.1")
+                        ? "ADB 本机通道"
+                        : (configuredBaseUrl.contains("mesh.vimalinx.com")
+                                ? "默认 Hub"
+                                : "网络连接")));
     }
 
     private String loadSavedApiKey() {
@@ -1486,61 +2220,248 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         connectionState.setBackground(Tints.rounded(background, dp(99), foreground, dp(1)));
     }
 
-    private void setRunState(String badge, String value, int foreground, int background) {
-        setPill(runBadge, badge, foreground, background);
+    private void setTaskState(TaskPanelState state, TaskSource source, String value) {
+        taskPanelState = state;
+        taskSource = source;
+        taskStateRevision++;
+        int foreground = taskStateForeground(state);
+        setPill(runBadge, taskStateBadge(state), foreground, taskStateBackground(state));
         runState.setText(value);
-        runState.setTextColor(Tints.TEXT_SECONDARY);
+        runState.setTextColor(Tints.TEXT);
+        runState.setContentDescription("当前任务，" + taskStateBadge(state) + "，" + value);
+        publishProgress(state, value, foreground);
+        updateTaskControls();
     }
 
-    private void uiRunState(String badge, String value, int foreground, int background) {
-        runOnUiThread(() -> setRunState(badge, value, foreground, background));
+    private void uiTaskState(TaskPanelState state, TaskSource source, String value) {
+        runOnUiThread(() -> {
+            if (source == TaskSource.WORKFLOW && taskSource == TaskSource.AGENT
+                    && (relayProcessing || challengeVisible())) return;
+            setTaskState(state, source, value);
+        });
     }
 
-    private void setTimelineStage(int stage, String currentDetail) {
-        timelineStage = Math.max(0, Math.min(stage, timelineBadges.size()));
-        for (int index = 0; index < timelineBadges.size(); index++) {
-            int step = index + 1;
-            TextView badge = timelineBadges.get(index);
-            if (step < timelineStage) {
-                setPill(badge, "完成", Tints.ACCENT, Tints.ACCENT_SOFT);
-            } else if (step == timelineStage) {
-                setPill(badge, "进行中", Tints.WARNING, Tints.WARNING_SOFT);
-                timelineDetails.get(index).setText(currentDetail);
-            } else {
-                setPill(badge, "等待", Tints.TEXT_MUTED, Tints.SURFACE_MUTED);
+    private TaskPanelState taskStateForRunStatus(String status) {
+        switch (status) {
+            case "starting": return TaskPanelState.STARTING_WORKFLOW;
+            case "running": return TaskPanelState.WORKFLOW_RUNNING;
+            case "captcha": return TaskPanelState.WAITING_HUMAN;
+            case "succeeded": return TaskPanelState.COMPLETED;
+            case "cancelled": return TaskPanelState.STOPPED;
+            case "interrupted": return TaskPanelState.INTERRUPTED;
+            case "failed": return TaskPanelState.FAILED;
+            default: return TaskPanelState.RECONNECTING;
+        }
+    }
+
+    private String taskStateBadge(TaskPanelState state) {
+        switch (state) {
+            case DISCONNECTED: return "未配对";
+            case IDLE: return "接题中";
+            case PAUSED: return "已暂停";
+            case STARTING_WORKFLOW: return "启动中";
+            case WORKFLOW_RUNNING: return "运行中";
+            case RELAY_LOADING: return "读取中";
+            case WAITING_HUMAN: return "待验证";
+            case RESULT_SENT: return "已回传";
+            case RECONNECTING: return "重连中";
+            case REFRESHING: return "刷新中";
+            case STOPPING_WORKFLOW: return "停止中";
+            case COMPLETED: return "已完成";
+            case STOPPED: return "已停止";
+            case INTERRUPTED: return "已中断";
+            case FAILED: return "失败";
+            default: return "待命";
+        }
+    }
+
+    private int taskStateForeground(TaskPanelState state) {
+        switch (state) {
+            case WORKFLOW_RUNNING:
+            case RELAY_LOADING:
+            case RECONNECTING:
+            case REFRESHING:
+                return Tints.INFO;
+            case PAUSED:
+            case STARTING_WORKFLOW:
+            case WAITING_HUMAN:
+            case STOPPING_WORKFLOW:
+            case INTERRUPTED:
+                return Tints.WARNING;
+            case RESULT_SENT:
+            case COMPLETED:
+                return Tints.ACCENT;
+            case FAILED:
+                return Tints.DANGER;
+            default:
+                return Tints.TEXT_SECONDARY;
+        }
+    }
+
+    private int taskStateBackground(TaskPanelState state) {
+        int foreground = taskStateForeground(state);
+        if (foreground == Tints.INFO) return Tints.INFO_SOFT;
+        if (foreground == Tints.WARNING) return Tints.WARNING_SOFT;
+        if (foreground == Tints.ACCENT) return Tints.ACCENT_SOFT;
+        if (foreground == Tints.DANGER) return Tints.DANGER_SOFT;
+        return Tints.SURFACE_MUTED;
+    }
+
+    private boolean taskStateIsActive(TaskPanelState state) {
+        switch (state) {
+            case STARTING_WORKFLOW:
+            case WORKFLOW_RUNNING:
+            case RELAY_LOADING:
+            case WAITING_HUMAN:
+            case RECONNECTING:
+            case REFRESHING:
+            case STOPPING_WORKFLOW:
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    private boolean taskStateIsTerminal(TaskPanelState state) {
+        return state == TaskPanelState.RESULT_SENT || state == TaskPanelState.COMPLETED
+                || state == TaskPanelState.STOPPED
+                || state == TaskPanelState.INTERRUPTED || state == TaskPanelState.FAILED;
+    }
+
+    private String taskProgressText(TaskPanelState state, String value) {
+        switch (state) {
+            case DISCONNECTED: return "等待配对个人 Agent";
+            case IDLE: return "等待新任务";
+            case PAUSED: return "接题已暂停";
+            case STARTING_WORKFLOW: return "正在启动电脑流程";
+            case WORKFLOW_RUNNING: return "电脑流程运行中";
+            case RELAY_LOADING: return "正在安全读取 Agent 任务";
+            case WAITING_HUMAN: return "等待你完成人工验证";
+            case RESULT_SENT: return "验证结果已回传";
+            case RECONNECTING: return "正在恢复连接";
+            case REFRESHING: return "正在读取当前状态";
+            case STOPPING_WORKFLOW: return "正在停止电脑工作流";
+            case COMPLETED: return "任务已完成";
+            case STOPPED: return "任务已停止";
+            case INTERRUPTED: return "任务已中断";
+            case FAILED: return "任务处理失败";
+            default: return value == null || value.isEmpty() ? "等待新任务" : value;
+        }
+    }
+
+    private String initialTaskDetail() {
+        if (!storedRunId().isEmpty()) {
+            String name = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                    .getString(CaptchaWatchService.PREF_ACTIVE_RUN_NAME, "电脑工作流");
+            return taskIntakePaused
+                    ? name + " · 接题已暂停，电脑工作流继续运行"
+                    : name + " · 正在恢复本次任务监听";
+        }
+        if (taskIntakePaused) return "已暂停接收新任务";
+        return RelayStore.load(this) == null ? "尚未配对个人 Agent" : "正在接收新任务";
+    }
+
+    private void updateTaskControls() {
+        if (continueTaskButton == null || rerunWorkflowButton == null
+                || pauseTaskButton == null || stopWorkflowButton == null
+                || taskRefreshButton == null) return;
+        boolean solving = challengeVisible();
+        boolean busy = solving || taskRefreshInFlight
+                || taskPanelState == TaskPanelState.STARTING_WORKFLOW
+                || taskPanelState == TaskPanelState.RELAY_LOADING
+                || taskPanelState == TaskPanelState.REFRESHING
+                || taskPanelState == TaskPanelState.STOPPING_WORKFLOW;
+        hideTaskAction(continueTaskButton);
+        hideTaskAction(rerunWorkflowButton);
+        hideTaskAction(pauseTaskButton);
+        hideTaskAction(stopWorkflowButton);
+        hideTaskAction(taskRefreshButton);
+
+        if (!busy) {
+            switch (taskPanelState) {
+                case DISCONNECTED:
+                    showTaskAction(continueTaskButton, "去配对");
+                    showTaskAction(taskRefreshButton, "刷新");
+                    break;
+                case IDLE:
+                    showTaskAction(pauseTaskButton, "暂停接题");
+                    showTaskAction(taskRefreshButton, "刷新");
+                    break;
+                case PAUSED:
+                    showTaskAction(continueTaskButton, "继续接题");
+                    if (!storedRunId().isEmpty()) {
+                        showTaskAction(stopWorkflowButton, "停止工作流");
+                    }
+                    showTaskAction(taskRefreshButton, "刷新");
+                    break;
+                case WORKFLOW_RUNNING:
+                case RECONNECTING:
+                    showTaskAction(stopWorkflowButton, "停止工作流");
+                    showTaskAction(taskRefreshButton, "刷新");
+                    break;
+                case WAITING_HUMAN:
+                    if (taskSource == TaskSource.WORKFLOW && !solving) {
+                        showTaskAction(stopWorkflowButton, "停止工作流");
+                        showTaskAction(taskRefreshButton, "刷新");
+                    }
+                    break;
+                case RESULT_SENT:
+                    if (taskSource == TaskSource.WORKFLOW) {
+                        showTaskAction(stopWorkflowButton, "停止工作流");
+                        showTaskAction(taskRefreshButton, "刷新");
+                    } else {
+                        showTaskAction(continueTaskButton, "返回待命");
+                    }
+                    break;
+                case COMPLETED:
+                case STOPPED:
+                case INTERRUPTED:
+                case FAILED:
+                    showTaskAction(continueTaskButton, "返回待命");
+                    if (taskSource == TaskSource.WORKFLOW
+                            && lastRegistrationId != null && !lastRegistrationId.isEmpty()) {
+                        showTaskAction(rerunWorkflowButton, "重跑该工作流");
+                    }
+                    break;
+                default:
+                    break;
             }
         }
+        normalizeTaskActionRow(primaryTaskActions);
+        normalizeTaskActionRow(secondaryTaskActions);
+        primaryTaskActions.setVisibility(hasVisibleChild(primaryTaskActions) ? View.VISIBLE : View.GONE);
+        secondaryTaskActions.setVisibility(hasVisibleChild(secondaryTaskActions) ? View.VISIBLE : View.GONE);
     }
 
-    private void uiTimelineStage(int stage, String detail) {
-        runOnUiThread(() -> setTimelineStage(stage, detail));
+    private void hideTaskAction(MaterialButton button) {
+        button.setEnabled(false);
+        button.setVisibility(View.GONE);
     }
 
-    private void setTimelineTerminal(String status, String detail) {
-        boolean succeeded = "succeeded".equals(status);
-        int terminalIndex = succeeded ? timelineBadges.size() : Math.max(1, timelineStage);
-        for (int index = 0; index < timelineBadges.size(); index++) {
-            int step = index + 1;
-            TextView badge = timelineBadges.get(index);
-            if (succeeded || step < terminalIndex) {
-                setPill(badge, "完成", Tints.ACCENT, Tints.ACCENT_SOFT);
-            } else if (step == terminalIndex) {
-                String label = "cancelled".equals(status) ? "已停止" : "失败";
-                int foreground = "cancelled".equals(status) ? Tints.WARNING : Tints.DANGER;
-                int background = "cancelled".equals(status) ? Tints.WARNING_SOFT : Tints.DANGER_SOFT;
-                setPill(badge, label, foreground, background);
-                timelineDetails.get(index).setText(detail);
-            } else {
-                setPill(badge, "未执行", Tints.TEXT_MUTED, Tints.SURFACE_MUTED);
-            }
+    private void showTaskAction(MaterialButton button, String label) {
+        button.setText(label);
+        button.setContentDescription(label);
+        button.setVisibility(View.VISIBLE);
+        button.setEnabled(true);
+    }
+
+    private void normalizeTaskActionRow(LinearLayout row) {
+        boolean first = true;
+        for (int index = 0; index < row.getChildCount(); index++) {
+            View child = row.getChildAt(index);
+            if (child.getVisibility() != View.VISIBLE) continue;
+            LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) child.getLayoutParams();
+            params.leftMargin = first ? 0 : dp(8);
+            child.setLayoutParams(params);
+            first = false;
         }
-        if (succeeded && !timelineDetails.isEmpty()) {
-            timelineDetails.get(timelineDetails.size() - 1).setText(detail);
-        }
     }
 
-    private void uiTimelineTerminal(String status, String detail) {
-        runOnUiThread(() -> setTimelineTerminal(status, detail));
+    private boolean hasVisibleChild(LinearLayout row) {
+        for (int index = 0; index < row.getChildCount(); index++) {
+            if (row.getChildAt(index).getVisibility() == View.VISIBLE) return true;
+        }
+        return false;
     }
 
     private void appendLogOnUi(String value) {
@@ -1558,6 +2479,13 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 existing.substring(0, Math.min(existing.length(), 6000)));
         logView.setText(updated);
         saveEncryptedPreference(LOCAL_RECORDS_CIPHERTEXT, LOCAL_RECORDS_IV, updated);
+    }
+
+    private void copyDiagnosticLog() {
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        clipboard.setPrimaryClip(ClipData.newPlainText(
+                "CaptchaMesh diagnostic", DiagnosticLog.report(this)));
+        Toast.makeText(this, "脱敏诊断已复制", Toast.LENGTH_SHORT).show();
     }
 
     private String concise(Exception exception) {
@@ -1588,6 +2516,7 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 .remove(LOCAL_RECORDS_CIPHERTEXT)
                 .remove(LOCAL_RECORDS_IV)
                 .apply();
+        DiagnosticLog.clear(this);
         logView.setText("暂无任务记录");
         Toast.makeText(this, "本机记录已清空", Toast.LENGTH_SHORT).show();
     }
@@ -2046,10 +2975,19 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                         relayStatus.setText("个人 Agent：已端到端配对 · " + nodeName);
                         relayStatus.setTextColor(Tints.ACCENT);
                     }
+                    if (pairingScanButton != null) {
+                        pairingScanButton.setText("重新扫码配对");
+                        pairingScanButton.setContentDescription("重新扫描 CaptchaMesh 配对二维码");
+                    }
                     Toast.makeText(this, "配对成功；Hub 无法读取任务内容", Toast.LENGTH_LONG).show();
+                    if (!taskIntakePaused && storedRunId().isEmpty()
+                            && taskPanelState == TaskPanelState.DISCONNECTED) {
+                        setTaskState(TaskPanelState.IDLE, TaskSource.NONE, "正在接收新任务");
+                    }
                     startRelayNotifications();
                 });
             } catch (Exception exception) {
+                DiagnosticLog.error(this, "PAIRING", "CLAIM_FAILED", exception);
                 runOnUiThread(() -> {
                     if (relayStatus != null) relayStatus.setText("个人 Agent：配对失败，请重新扫码");
                     Toast.makeText(this, "配对失败：二维码可能已过期", Toast.LENGTH_LONG).show();
@@ -2058,7 +2996,42 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         });
     }
 
+    private void launchPairingScanner() {
+        ScanOptions options = new ScanOptions();
+        options.setDesiredBarcodeFormats(ScanOptions.QR_CODE);
+        options.setPrompt("将电脑上的 CaptchaMesh 二维码放入取景框");
+        options.setBeepEnabled(false);
+        options.setBarcodeImageEnabled(false);
+        options.setCaptureActivity(PairingCaptureActivity.class);
+        options.setOrientationLocked(true);
+        pairingScanner.launch(options);
+    }
+
+    private void handleScannedPairing(String contents) {
+        android.net.Uri uri;
+        try {
+            uri = android.net.Uri.parse(contents.trim());
+        } catch (RuntimeException exception) {
+            showInvalidScannedPairing();
+            return;
+        }
+        if (!"captchamesh".equals(uri.getScheme()) || !"pair".equals(uri.getHost())) {
+            showInvalidScannedPairing();
+            return;
+        }
+        claimRelayPairing(uri);
+    }
+
+    private void showInvalidScannedPairing() {
+        if (relayStatus != null && RelayStore.load(this) == null) {
+            relayStatus.setText("个人 Agent：未配对 · 请扫描电脑页面上的二维码");
+        }
+        Toast.makeText(this, "不是 CaptchaMesh 配对码，请扫描电脑页面上的二维码",
+                Toast.LENGTH_LONG).show();
+    }
+
     private void startRelayNotifications() {
+        if (taskIntakePaused) return;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
                 && NotificationPreferences.taskAlertsEnabled(this)
                 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
@@ -2072,22 +3045,25 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
     }
 
     private void processPendingRelay() {
-        if (relayProcessing || destroyed || !foregroundVisible) return;
-        String stored = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
-                .getString(RelayStore.PREF_PENDING, "");
+        if (taskIntakePaused || relayProcessing || challengeVisible()
+                || destroyed || !foregroundVisible) return;
+        JSONObject pending = RelayStore.peekEnvelope(this);
         RelayStore.Config config = RelayStore.load(this);
-        if (stored.isEmpty() || config == null) return;
+        if (pending == null || config == null) return;
         relayProcessing = true;
+        activeRelayMessageId = pending.optString("messageId", "");
+        setTaskState(TaskPanelState.RELAY_LOADING, TaskSource.AGENT,
+                "正在安全读取个人 Agent 任务");
+        refreshAgentTaskQueue();
         selectPage(R.id.nav_task);
-        executor.submit(() -> solveRelayEnvelope(config, stored));
+        relayExecutor.submit(() -> solveRelayEnvelope(config, pending));
     }
 
-    private void solveRelayEnvelope(RelayStore.Config config, String stored) {
-        JSONObject inputEnvelope = null;
+    private void solveRelayEnvelope(RelayStore.Config config, JSONObject inputEnvelope) {
         JSONObject taskPayload = null;
-        boolean delivered = false;
+        boolean removeLocal = false;
+        String messageId = inputEnvelope.optString("messageId", "");
         try {
-            inputEnvelope = new JSONObject(stored);
             taskPayload = RelayCrypto.decrypt(config.secret, inputEnvelope, "node_to_phone");
             if (!"captcha_task".equals(taskPayload.getString("kind"))) {
                 throw new IllegalArgumentException("unknown relay payload");
@@ -2104,49 +3080,73 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
                 assets.put(name, bitmap);
             }
             runOnUiThread(() -> {
-                setRunState("待验证", friendlyCaptcha(task.type) + " · 来自已配对的个人 Agent",
-                        Tints.WARNING, Tints.WARNING_SOFT);
+                resetProgressHistory();
                 appendLogOnUi("收到端到端加密的 " + task.type + " 任务");
             });
-            Solver.Solution solved = solver.solve(task, assets);
+            Solver.Solution solved = solveWithHumanFocus(task, assets, TaskSource.AGENT,
+                    friendlyCaptcha(task.type) + " · 来自已配对的个人 Agent");
             sendRelayResult(config, new JSONObject().put("kind", "captcha_result")
                     .put("taskId", task.id).put("status", "ready")
                     .put("solution", solved.value));
-            ackRelay(config, inputEnvelope.getString("messageId"));
-            delivered = true;
-            runOnUiThread(() -> appendLogOnUi("加密结果已回传给个人 Agent"));
+            removeLocal = true;
+            runOnUiThread(() -> {
+                setTaskState(TaskPanelState.RESULT_SENT, TaskSource.AGENT,
+                        friendlyCaptcha(task.type) + " · 已交给个人 Agent");
+                appendLog("加密结果已回传给个人 Agent");
+            });
         } catch (Exception exception) {
+            DiagnosticLog.error(this, "AGENT_TASK", "PROCESS_FAILED", exception);
             try {
                 if (taskPayload != null && inputEnvelope != null) {
                     String taskId = taskPayload.optString("taskId", "unknown");
                     sendRelayResult(config, new JSONObject().put("kind", "captcha_result")
                             .put("taskId", taskId).put("status", "failed")
                             .put("errorDescription", concise(exception)));
-                    ackRelay(config, inputEnvelope.getString("messageId"));
-                    delivered = true;
+                    removeLocal = true;
                 }
             } catch (Exception ignored) { }
-            runOnUiThread(() -> Toast.makeText(this,
-                    "加密任务处理失败：" + concise(exception), Toast.LENGTH_LONG).show());
+            if (taskPayload == null) removeLocal = true;
+            runOnUiThread(() -> {
+                setTaskState(TaskPanelState.FAILED, TaskSource.AGENT,
+                        "验证未完成 · " + concise(exception));
+                Toast.makeText(this,
+                        "加密任务处理失败：" + concise(exception), Toast.LENGTH_LONG).show();
+            });
         } finally {
-            if (delivered) {
-                getSharedPreferences(PREFERENCES, MODE_PRIVATE).edit()
-                        .remove(RelayStore.PREF_PENDING).apply();
-            }
+            if (removeLocal && !messageId.isEmpty()) RelayStore.removeEnvelope(this, messageId);
             relayProcessing = false;
+            activeRelayMessageId = "";
+            boolean completedLocally = removeLocal;
+            runOnUiThread(() -> {
+                refreshAgentTaskQueue();
+                updateTaskControls();
+                if (completedLocally && RelayStore.pendingCount(this) > 0 && !taskIntakePaused) {
+                    advanceRelayAfterChallenge = true;
+                    if (!challengeVisible()) {
+                        advanceRelayAfterChallenge = false;
+                        challengeCard.post(this::processPendingRelay);
+                    }
+                } else if (completedLocally && !storedRunId().isEmpty()) {
+                    restoreWorkflowTaskState();
+                }
+            });
         }
+    }
+
+    private void restoreWorkflowTaskState() {
+        String runId = storedRunId();
+        if (runId.isEmpty()) return;
+        String name = getSharedPreferences(PREFERENCES, MODE_PRIVATE)
+                .getString(CaptchaWatchService.PREF_ACTIVE_RUN_NAME, "电脑工作流");
+        setTaskState(taskIntakePaused ? TaskPanelState.PAUSED : TaskPanelState.WORKFLOW_RUNNING,
+                TaskSource.WORKFLOW,
+                name + (taskIntakePaused ? " · 接题已暂停，电脑工作流继续运行" : " · 电脑正在运行"));
     }
 
     private void sendRelayResult(RelayStore.Config config, JSONObject result) throws Exception {
         JSONObject envelope = RelayCrypto.encrypt(
                 config.secret, config.mailbox, "phone_to_node", result);
         Http.post(http, config.hub + "/v1/relay/messages", envelope.toString(),
-                "Device " + config.token);
-    }
-
-    private void ackRelay(RelayStore.Config config, String messageId) throws Exception {
-        Http.post(http, config.hub + "/v1/relay/ack",
-                new JSONObject().put("messageId", messageId).toString(),
                 "Device " + config.token);
     }
 
@@ -2171,6 +3171,9 @@ public class MainActivity extends AppCompatActivity implements Solver.Ui {
         active = false;
         solver.shutdown();
         executor.shutdownNow();
+        workflowExecutor.shutdownNow();
+        relayExecutor.shutdownNow();
+        relayQueueExecutor.shutdownNow();
         diagnosticExecutor.shutdownNow();
         super.onDestroy();
     }

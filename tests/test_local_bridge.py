@@ -21,8 +21,10 @@ from captchamesh_cli import (
     read_private_text,
     require_available_port,
     show_config,
+    show_logs,
     write_private_text,
 )
+from diagnostic_log import DiagnosticLog, MAX_LOG_BYTES
 from local_bridge import LocalBridge, PairingManager
 
 
@@ -150,7 +152,7 @@ class LocalBridgeTest(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
         self.assertEqual(value, "OK|manual-token")
 
-    async def test_tasks_are_serialized_for_one_phone_mailbox(self) -> None:
+    async def test_tasks_run_concurrently_for_one_phone_mailbox(self) -> None:
         task_ids = []
         for index in range(2):
             response = await self.client.post(
@@ -166,7 +168,7 @@ class LocalBridgeTest(unittest.IsolatedAsyncioTestCase):
             )
             task_ids.append((await response.get_json())["taskId"])
         await asyncio.gather(*(self.wait_v2(task_id) for task_id in task_ids))
-        self.assertEqual(FakeRelayClient.max_active, 1)
+        self.assertGreaterEqual(FakeRelayClient.max_active, 2)
 
     async def test_setup_page_hides_pairing_secret_and_reports_phone(self) -> None:
         prefix = "/setup"
@@ -218,6 +220,31 @@ class LocalBridgeTest(unittest.IsolatedAsyncioTestCase):
 
 
 class LocalKeyTest(unittest.TestCase):
+    def test_desktop_diagnostics_are_private_bounded_and_redacted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state" / "diagnostics.jsonl"
+            diagnostics = DiagnosticLog(path)
+            try:
+                raise RuntimeError("secret-token https://private.example.test/")
+            except RuntimeError as error:
+                diagnostics.event("LOCAL_BRIDGE", "TASK_FAILED", error)
+            value = diagnostics.read()
+            self.assertIn('"event":"TASK_FAILED"', value)
+            self.assertIn('"errorType":"builtins.RuntimeError"', value)
+            self.assertNotIn("secret-token", value)
+            self.assertNotIn("private.example.test", value)
+            self.assertLessEqual(path.stat().st_size, MAX_LOG_BYTES)
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+            output = StringIO()
+            with redirect_stdout(output):
+                show_logs(Namespace(state_file=path.parent / "relay-pairing.json", clear=False))
+            self.assertIn('"event":"TASK_FAILED"', output.getvalue())
+
+            with redirect_stdout(StringIO()):
+                show_logs(Namespace(state_file=path.parent / "relay-pairing.json", clear=True))
+            self.assertEqual(diagnostics.read(), "")
+
     def test_noninteractive_setup_url_is_redacted_unless_explicit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             private_file = Path(directory) / "setup-url"

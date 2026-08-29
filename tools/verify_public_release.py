@@ -28,6 +28,13 @@ FORBIDDEN_BYTES = (
     b"\\Users\\",
     b"webshare_register",
 )
+REQUIRED_SKILL_MEMBERS = {
+    "captchamesh-adapter/SKILL.md",
+    "captchamesh-adapter/agents/openai.yaml",
+    "captchamesh-adapter/references/adapter-workflow.md",
+    "captchamesh-adapter/references/protocol.md",
+    "captchamesh-adapter/scripts/inspect_registration.py",
+}
 
 
 def check_member(name: str, data: bytes) -> list[str]:
@@ -51,27 +58,43 @@ def check_member(name: str, data: bytes) -> list[str]:
     return problems
 
 
+def check_skill_bundle(names: list[str]) -> list[str]:
+    normalized = {PurePosixPath(name).as_posix() for name in names}
+    missing = sorted(
+        member
+        for member in REQUIRED_SKILL_MEMBERS
+        if not any(name.endswith("/" + member) for name in normalized)
+    )
+    return ["missing Agent Skill member: " + member for member in missing]
+
+
 def inspect_wheel(path: Path) -> list[str]:
     problems: list[str] = []
     with zipfile.ZipFile(path) as archive:
+        names: list[str] = []
         for info in archive.infolist():
             if info.is_dir():
                 continue
+            names.append(info.filename)
             problems.extend(check_member(info.filename, archive.read(info)))
+        problems.extend(check_skill_bundle(names))
     return problems
 
 
 def inspect_sdist(path: Path) -> list[str]:
     problems: list[str] = []
     with tarfile.open(path, "r:gz") as archive:
+        names: list[str] = []
         for member in archive.getmembers():
             if member.issym() or member.islnk():
                 problems.append(f"archive link is not allowed: {member.name}")
                 continue
             if not member.isfile():
                 continue
+            names.append(member.name)
             source = archive.extractfile(member)
             problems.extend(check_member(member.name, source.read() if source else b""))
+        problems.extend(check_skill_bundle(names))
     return problems
 
 

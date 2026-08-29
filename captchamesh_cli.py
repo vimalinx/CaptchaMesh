@@ -16,8 +16,16 @@ import requests
 from hypercorn.asyncio import serve
 from hypercorn.config import Config
 
+from diagnostic_log import DiagnosticLog
 from local_bridge import PairingManager, make_local_bridge
 from pair_device import _read_secret
+from skill_manager import (
+    SkillInstallError,
+    format_status,
+    install_skill,
+    run_bundled_inspector,
+    skill_status,
+)
 
 
 def default_state_file() -> Path:
@@ -156,6 +164,8 @@ async def run_start(args: argparse.Namespace) -> None:
     setup_token_file = state_file.parent / f"setup-token-{args.port}"
     setup_url_file = state_file.parent / f"setup-url-{args.port}"
     database = state_file.parent / "bridge.db"
+    diagnostics = DiagnosticLog(state_file.parent / "diagnostics.jsonl")
+    diagnostics.event("LOCAL_BRIDGE", "STARTED")
     host_for_url = "127.0.0.1" if args.host in {"::1", "localhost"} else args.host
     if bridge_is_running(args.host, args.port):
         print("CaptchaMesh 本地加密桥已在运行", flush=True)
@@ -187,6 +197,7 @@ async def run_start(args: argparse.Namespace) -> None:
         try:
             await asyncio.to_thread(pairing.restart)
         except Exception as exc:
+            diagnostics.event("LOCAL_BRIDGE", "INITIAL_PAIRING_FAILED", exc)
             pairing.last_error = str(exc)
     bridge = make_local_bridge(
         state_file=state_file,
@@ -194,6 +205,7 @@ async def run_start(args: argparse.Namespace) -> None:
         local_api_key=local_key,
         pairing=pairing,
         setup_token=setup_token,
+        diagnostics=diagnostics,
     )
     setup_url = f"http://{host_for_url}:{args.port}/setup#{bridge.setup_token}"
     print("CaptchaMesh 本地加密桥已启动", flush=True)
@@ -236,9 +248,22 @@ def show_config(args: argparse.Namespace) -> None:
             print(f"API Key：{value['apiKey']}")
 
 
+def show_logs(args: argparse.Namespace) -> None:
+    state_file = args.state_file.expanduser()
+    diagnostics = DiagnosticLog(state_file.parent / "diagnostics.jsonl")
+    if args.clear:
+        diagnostics.clear()
+        print("CaptchaMesh 本机诊断已清空")
+        return
+    value = diagnostics.read()
+    if value:
+        print(value, end="" if value.endswith("\n") else "\n")
+    else:
+        print("暂无本机诊断记录")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="captchamesh", description="CaptchaMesh 本地加密桥")
-    parser.set_defaults(command="start")
     subparsers = parser.add_subparsers(dest="command")
 
     start = subparsers.add_parser("start", help="启动本地兼容服务，未配对时生成二维码")
@@ -263,15 +288,54 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="显式把本机 API Key 输出到终端；默认只显示受限密钥文件路径",
     )
+
+    logs = subparsers.add_parser("logs", help="查看脱敏的本机桥错误诊断")
+    logs.add_argument("--state-file", type=Path, default=default_state_file())
+    logs.add_argument("--clear", action="store_true", help="清空本机诊断记录")
+
+    skill = subparsers.add_parser("skill", help="安装或检查 CaptchaMesh Agent Skill")
+    skill_commands = skill.add_subparsers(dest="skill_command", required=True)
+    skill_install = skill_commands.add_parser("install", help="安装或安全更新 Agent Skill")
+    skill_install.add_argument("--target", type=Path)
+    skill_status_parser = skill_commands.add_parser("status", help="检查 Agent Skill 状态")
+    skill_status_parser.add_argument("--target", type=Path)
+    skill_status_parser.add_argument("--json", action="store_true")
+    skill_inspect = skill_commands.add_parser(
+        "inspect",
+        help="检查目标项目的 CAPTCHA 接入信号",
+        add_help=False,
+    )
+    skill_inspect.add_argument("arguments", nargs=argparse.REMAINDER)
     return parser
 
 
 def main() -> int:
     parser = build_parser()
-    args = parser.parse_args()
+    argv = sys.argv[1:] or ["start"]
+    args = parser.parse_args(argv)
     if args.command == "config":
         show_config(args)
         return 0
+    if args.command == "logs":
+        show_logs(args)
+        return 0
+    if args.command == "skill":
+        try:
+            if args.skill_command == "inspect":
+                return run_bundled_inspector(args.arguments)
+            if args.skill_command == "install":
+                action, status = install_skill(target=args.target)
+                if action == "current":
+                    print(format_status(status))
+                else:
+                    label = "已安装" if action == "installed" else "已安全更新"
+                    print(f"CaptchaMesh Agent Skill {label}：{status.target}")
+                return 0
+            status = skill_status(target=args.target)
+            print(status.to_json() if args.json else format_status(status))
+            return 0 if status.state == "current" else 1
+        except SkillInstallError as exc:
+            raise SystemExit(str(exc)) from exc
     asyncio.run(run_start(args))
     return 0
 

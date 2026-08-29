@@ -61,6 +61,41 @@ cd CaptchaMesh
 captchamesh start
 ```
 
+`./install.sh` 会同时安装电脑端 CLI 和 `captchamesh-adapter` Agent Skill。默认 Skill 位置为
+`${CODEX_HOME:-~/.codex}/skills/captchamesh-adapter`，可随时检查：
+
+```bash
+captchamesh skill status
+```
+
+例如，安装完成后可以确认 Skill 文件已经挂载到 Codex 的全局目录：
+
+```bash
+captchamesh skill status
+test -f "${CODEX_HOME:-$HOME/.codex}/skills/captchamesh-adapter/SKILL.md" \
+  && echo "CaptchaMesh Skill ready"
+```
+
+然后新开一个 Codex 会话，在需要接入 CaptchaMesh 的项目目录中输入：
+
+```text
+$captchamesh-adapter 检查当前项目的 2captcha-python 接入，使用 Agent API 模式，
+把 endpoint 改到本机 CaptchaMesh 并验证，但不要读取或输出真实密钥。
+```
+
+Skill 安装是全局的，但只会处理当前会话中用户明确指定的项目和任务；它不会自动上传到
+OpenAI 云端，也不会绕过项目授权或在后台执行 CAPTCHA 任务。
+
+也可以在任意项目目录中直接运行随安装包提供的检查器，不需要该项目存在 `.skill/` 目录：
+
+```bash
+captchamesh skill inspect . --mode agent-api --json
+```
+
+重复运行安装器会安全更新未修改的 Skill；如果检测到用户自己修改过 Skill 或目标目录不受
+CaptchaMesh 管理，安装器会停止并保留原内容，不会静默覆盖。直接从 wheel 安装的用户可执行
+`captchamesh skill install` 完成同一步骤。
+
 程序只监听 `127.0.0.1:8893`。在交互终端中打开显示的配对地址，然后用 App 扫描二维码。
 服务管理器等非交互环境不会把配对令牌写进日志，而是输出一个权限为 `0600` 的本机文件路径。
 
@@ -80,6 +115,16 @@ result = solver.turnstile(
 
 其他 2Captcha v1/v2 客户端将 API 地址改为 `http://127.0.0.1:8893`。默认的
 `captchamesh config --json` 只返回 API 地址和受限 Key 文件路径，不会显示 Key。
+
+电脑端发生配对、连接或任务错误时，可查看脱敏诊断：
+
+```bash
+captchamesh logs
+captchamesh logs --clear
+```
+
+诊断文件位于 CaptchaMesh 本机状态目录，权限为 `0600`、上限 256 KiB；仅记录固定事件、异常类型和
+代码位置，不记录异常消息、Key、Token、Cookie、网址或任务内容。
 
 详细接入方法见 [电脑端本地桥](docs/local-bridge.md) 和
 [2Captcha API 兼容说明](docs/twocaptcha-v2-compat.md)。
@@ -108,7 +153,7 @@ CAPTCHA token 往往绑定浏览器状态、网络出口和短期上下文。电
 - 保持 Agent 原来的浏览器与业务流程；
 - 在本机完成任务格式转换和端到端加密；
 - 提供常用 2Captcha API v1/v2 兼容端点；
-- 串行调度单个手机上的人工任务，避免结果串单；
+- 并发接收并持久跟踪多个 Agent 任务，按 `taskId` 分流乱序结果；手机上的人工界面一次只聚焦一个任务；
 - 只在权限为 `0600` 的本机数据库中短期保存结果。
 
 Hub 只转发密文和必要路由元数据，配对密钥只保存在电脑和 Android Keystore 中。
@@ -152,6 +197,10 @@ adb reverse tcp:8890 tcp:8890
 日常使用不需要 ADB；推荐使用电脑端生成的一次性二维码。详见
 [Android 安装与连接](docs/phone-deploy.md)。
 
+遇到崩溃、后台断连或任务失败时，打开 App 的“记录”页并点击“复制诊断”。复制内容只包含
+版本、异常类型和 CaptchaMesh 自身栈帧，可直接粘贴到私有 Issue；它不包含 Key、Token、
+Cookie、网址或任务内容。完整排查步骤见[Android 安装与连接](docs/phone-deploy.md#复制脱敏诊断)。
+
 ## 可选：手机工作流模式
 
 ```bash
@@ -194,7 +243,7 @@ sudo ./deploy/hub/install.sh --domain mesh.example.com
 - 配对能力令牌使用 URL fragment，不进入 HTTP 请求路径，并在页面加载后从地址栏清除。
 - 本机状态目录为 `0700`，密钥、数据库和非交互配对文件为 `0600`。
 - 密钥文件拒绝符号链接、硬链接和非普通文件。
-- 通知、普通日志和默认配置输出不包含 Key、Cookie、挑战正文或答案。
+- 通知、普通日志、脱敏诊断和默认配置输出不包含 Key、Cookie、挑战正文或答案。
 - 回调、SOCKS、带认证代理和任意远程命令默认拒绝。
 - CI 在发布前检查 wheel/sdist，发现本机文件、私有标记或异常归档成员会直接失败。
 
@@ -228,4 +277,5 @@ sudo ./deploy/hub/install.sh --domain mesh.example.com
 | `.skill/captchamesh-adapter/` | Agent 接入 Skill |
 | `deploy/hub/` | 自托管 Hub 配置 |
 
-欢迎阅读 [贡献指南](CONTRIBUTING.md)。当前版本为 `0.19.1`，采用 [MIT License](LICENSE)。
+欢迎阅读 [贡献指南](CONTRIBUTING.md)、[社区行为准则](CODE_OF_CONDUCT.md)和
+[支持说明](SUPPORT.md)。当前版本为 `0.19.8`，采用 [MIT License](LICENSE)。

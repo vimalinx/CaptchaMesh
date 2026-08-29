@@ -77,7 +77,10 @@ public final class CaptchaWatchService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent == null) return START_NOT_STICKY;
+        if (intent == null) {
+            DiagnosticLog.event(this, "WORKFLOW_WATCH", "INTENT_MISSING");
+            return START_NOT_STICKY;
+        }
         if (ACTION_STOP.equals(intent.getAction())) {
             String runId = intent.getStringExtra(EXTRA_RUN_ID);
             String name = intent.getStringExtra(EXTRA_RUN_NAME);
@@ -97,12 +100,14 @@ public final class CaptchaWatchService extends Service {
         String runId = intent.getStringExtra(EXTRA_RUN_ID);
         String name = intent.getStringExtra(EXTRA_RUN_NAME);
         if (runId == null || runId.isEmpty()) {
+            DiagnosticLog.event(this, "WORKFLOW_WATCH", "RUN_ID_MISSING");
             stopSelf();
             return START_NOT_STICKY;
         }
         if (name == null || name.isEmpty()) name = "电脑工作流";
         watchedRunId = runId;
         stopped = false;
+        DiagnosticLog.event(this, "WORKFLOW_WATCH", "STARTED");
         startForeground(WAITING_NOTIFICATION_ID, waitingNotification(
                 name, "后台等待 CAPTCHA；可放心切换应用"));
         String finalName = name;
@@ -144,10 +149,16 @@ public final class CaptchaWatchService extends Service {
                     challengeNotified = false;
                     updateWaiting(name, "后台等待 CAPTCHA；可放心切换应用");
                 }
+                if (failures > 0) {
+                    DiagnosticLog.event(this, "WORKFLOW_WATCH", "CONNECTION_RECOVERED");
+                }
                 failures = 0;
                 sleep(ready ? 1000 : 2000);
             } catch (Exception exception) {
                 failures++;
+                if (failures == 1 || failures % 6 == 0) {
+                    DiagnosticLog.error(this, "WORKFLOW_WATCH", "POLL_FAILED", exception);
+                }
                 if (failures == 1 || failures % 6 == 0) {
                     updateWaiting(name, "连接暂时中断，后台仍在重试");
                 }
@@ -244,6 +255,7 @@ public final class CaptchaWatchService extends Service {
             clearStoredRun(runId);
             stopWatching(false);
         } catch (Exception exception) {
+            DiagnosticLog.error(this, "WORKFLOW_WATCH", "STOP_FAILED", exception);
             if (runIsTerminal(preferences, runId)) {
                 clearStoredRun(runId);
                 stopWatching(false);
@@ -346,6 +358,7 @@ public final class CaptchaWatchService extends Service {
 
     @Override
     public void onDestroy() {
+        DiagnosticLog.event(this, "WORKFLOW_WATCH", "STOPPED");
         stopped = true;
         executor.shutdownNow();
         getSystemService(NotificationManager.class).cancel(CHALLENGE_NOTIFICATION_ID);
