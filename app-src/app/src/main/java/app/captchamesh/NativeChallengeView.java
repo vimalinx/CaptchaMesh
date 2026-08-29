@@ -160,14 +160,6 @@ final class NativeChallengeView extends LinearLayout {
         TextView count = label("请选择 " + minimum + "–" + maximum + " 个位置",
                 13, Tints.TEXT_SECONDARY, false);
         addTop(count, 10);
-        LinearLayout tools = actionRow();
-        MaterialButton undo = secondaryButton("撤销");
-        undo.setOnClickListener(view -> image.undo());
-        MaterialButton clear = secondaryButton("清空");
-        clear.setOnClickListener(view -> image.clear());
-        tools.addView(undo, weightedButton());
-        tools.addView(clear, weightedButtonWithStart());
-        addTop(tools, 10);
 
         MaterialButton submit = primaryButton("提交坐标");
         submit.setEnabled(false);
@@ -188,6 +180,15 @@ final class NativeChallengeView extends LinearLayout {
             }
         });
         addAction(submit);
+
+        LinearLayout tools = actionRow();
+        MaterialButton undo = secondaryButton("撤销");
+        undo.setOnClickListener(view -> image.undo());
+        MaterialButton clear = secondaryButton("清空");
+        clear.setOnClickListener(view -> image.clear());
+        tools.addView(undo, weightedButton());
+        tools.addView(clear, weightedButtonWithStart());
+        addTop(tools, 10);
     }
 
     private void buildGrid(Bitmap bitmap) {
@@ -200,10 +201,6 @@ final class NativeChallengeView extends LinearLayout {
         TextView count = label("请选择 " + minimum + "–" + maximum + " 个格子",
                 13, Tints.TEXT_SECONDARY, false);
         addTop(count, 10);
-
-        MaterialButton clear = secondaryButton("清空选择");
-        clear.setOnClickListener(view -> image.clear());
-        addTop(clear, 10);
 
         MaterialButton submit = primaryButton("提交选择");
         submit.setEnabled(false);
@@ -222,6 +219,10 @@ final class NativeChallengeView extends LinearLayout {
             }
         });
         addAction(submit);
+
+        MaterialButton clear = secondaryButton("清空选择");
+        clear.setOnClickListener(view -> image.clear());
+        addTop(clear, 10);
     }
 
     private void buildRotate(Bitmap bitmap) {
@@ -256,17 +257,6 @@ final class NativeChallengeView extends LinearLayout {
             @Override public void onStopTrackingTouch(SeekBar bar) {}
         });
 
-        LinearLayout alternatives = actionRow();
-        MaterialButton counterClockwise = secondaryButton("向左");
-        counterClockwise.setContentDescription("向左旋转一步");
-        counterClockwise.setOnClickListener(view -> seek.setProgress(Math.max(0, seek.getProgress() - 1), true));
-        MaterialButton clockwise = secondaryButton("向右");
-        clockwise.setContentDescription("向右旋转一步");
-        clockwise.setOnClickListener(view -> seek.setProgress(Math.min(steps, seek.getProgress() + 1), true));
-        alternatives.addView(counterClockwise, weightedButton());
-        alternatives.addView(clockwise, weightedButtonWithStart());
-        addTop(alternatives, 8);
-
         MaterialButton submit = primaryButton("提交角度");
         submit.setOnClickListener(view -> {
             try {
@@ -277,6 +267,17 @@ final class NativeChallengeView extends LinearLayout {
             }
         });
         addAction(submit);
+
+        LinearLayout alternatives = actionRow();
+        MaterialButton counterClockwise = secondaryButton("向左");
+        counterClockwise.setContentDescription("向左旋转一步");
+        counterClockwise.setOnClickListener(view -> seek.setProgress(Math.max(0, seek.getProgress() - 1), true));
+        MaterialButton clockwise = secondaryButton("向右");
+        clockwise.setContentDescription("向右旋转一步");
+        clockwise.setOnClickListener(view -> seek.setProgress(Math.min(steps, seek.getProgress() + 1), true));
+        alternatives.addView(counterClockwise, weightedButton());
+        alternatives.addView(clockwise, weightedButtonWithStart());
+        addTop(alternatives, 8);
     }
 
     private String formatAngle(double value) {

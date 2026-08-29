@@ -191,6 +191,32 @@ class AndroidUiContractTest(unittest.TestCase):
         self.assertIn('friendlyCaptcha(task.type) + " · " + task.host()', show.group("body"))
         self.assertIn('runState.setContentDescription("当前任务，"', self.activity)
 
+    def test_structured_challenges_put_submit_before_secondary_editing_actions(self):
+        native = (ACTIVITY.parent / "NativeChallengeView.java").read_text(encoding="utf-8")
+        coordinates = re.search(
+            r"private void buildCoordinates\(Bitmap bitmap\) \{(?P<body>.*?)\n    \}",
+            native,
+            re.DOTALL,
+        ).group("body")
+        grid = re.search(
+            r"private void buildGrid\(Bitmap bitmap\) \{(?P<body>.*?)\n    \}",
+            native,
+            re.DOTALL,
+        ).group("body")
+        rotate = re.search(
+            r"private void buildRotate\(Bitmap bitmap\) \{(?P<body>.*?)\n    \}",
+            native,
+            re.DOTALL,
+        ).group("body")
+        self.assertLess(coordinates.index('primaryButton("提交坐标")'),
+                        coordinates.index('secondaryButton("撤销")'))
+        self.assertLess(coordinates.index("addAction(submit)"),
+                        coordinates.index("addTop(tools, 10)"))
+        self.assertLess(grid.index('primaryButton("提交选择")'),
+                        grid.index('secondaryButton("清空选择")'))
+        self.assertLess(rotate.index('primaryButton("提交角度")'),
+                        rotate.index('secondaryButton("向左")'))
+
     def test_local_log_clear_does_not_remove_api_key(self):
         method = re.search(
             r"private void clearLocalLog\(\) \{(?P<body>.*?)\n    \}",
