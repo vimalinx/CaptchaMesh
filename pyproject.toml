@@ -20,7 +20,7 @@ classifiers = [
 ]
 dependencies = [
   "2captcha-python==2.1.0",
-  "cryptography==50.0.0",
+  "cryptography==50.0.1",
   "hypercorn==0.18.0",
   "qrcode==8.2",
   "quart==0.22.0",

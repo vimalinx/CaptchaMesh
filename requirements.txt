@@ -1,6 +1,6 @@
 quart==0.22.0
 hypercorn==0.18.0
 requests==2.34.2
-cryptography==50.0.0
+cryptography==50.0.1
 qrcode==8.2
 2captcha-python==2.1.0
