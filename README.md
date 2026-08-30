@@ -265,6 +265,13 @@ sudo ./deploy/hub/install.sh --domain mesh.example.com
 | [两种模式与工作流接入](docs/batch-integration.md) | 默认 Agent API 与可选手机工作流的选择和接入 |
 | [工作流节点协议](docs/node-protocol.md) | 本机白名单工作流 |
 
+## 社区与交流
+
+[![Linux.do：新的理想型社区](https://img.shields.io/badge/Linux.do-新的理想型社区-1F883D?logo=linux&logoColor=white)](https://linux.do/)
+
+欢迎访问 [Linux.do](https://linux.do/) 交流 CaptchaMesh 的接入经验、兼容性反馈和使用建议。
+感谢 Linux.do 社区为独立开发者和开源项目提供交流空间。
+
 ## 项目结构
 
 | 路径 | 内容 |
