@@ -1,4 +1,10 @@
+<div align="center">
+
+<img src="docs/images/logo.png" width="96" alt="CaptchaMesh 图标" />
+
 # CaptchaMesh
+
+**电脑 Agent 碰到 CAPTCHA 时，把挑战安全地转给你自己的手机。**
 
 [![CI](https://github.com/vimalinx/CaptchaMesh/actions/workflows/ci.yml/badge.svg)](https://github.com/vimalinx/CaptchaMesh/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/vimalinx/CaptchaMesh?display_name=tag)](https://github.com/vimalinx/CaptchaMesh/releases)
@@ -6,13 +12,18 @@
 [![Android](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)](app-src/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**电脑 Agent 碰到 CAPTCHA 时，把挑战安全地转给你自己的手机。**
+</div>
 
 CaptchaMesh 是一个开源的人工接管工具，给个人、低频的使用场景用。电脑端保留原来的浏览器会话，
 把挑战端到端加密后交给 Android；你在手机上手动完成，结果回到原任务，Agent 接着跑。
 
-> CaptchaMesh 不做自动识别或绕过 CAPTCHA，也不做任务市场、后台抢单、批量注册和任意远程命令。
-> 可选的手机工作流只能启动电脑上预先登记的固定 ID；Hub 发不出命令、路径或临时参数。
+## 界面预览
+
+| 手动验证控制台 | 连接自检 | 脱敏运行记录 |
+|:---:|:---:|:---:|
+| <img src="docs/images/screenshot-tasks.png" width="280" /> | <img src="docs/images/screenshot-selfcheck.png" width="280" /> | <img src="docs/images/screenshot-history.png" width="280" /> |
+
+## 工作原理
 
 ```mermaid
 flowchart LR
