@@ -17,3 +17,5 @@ author: Vimalinx
 同一局域网可以用 `--lan` 开私有 HTTPS Hub。手机不在旁边时，可以用电脑端 Tailscale Funnel、Cloudflare Tunnel 或自己的公网 HTTPS 入口；WebUI 和 Agent API 仍然只绑回环。
 
 材料来自公开仓库 [vimalinx/CaptchaMesh](https://github.com/vimalinx/CaptchaMesh) 的 README 和 `docs/images/`。Linux + Python 3.11，手机要 Android 10 以上。
+
+![自检页，只做健康检查](images/selfcheck.png)
