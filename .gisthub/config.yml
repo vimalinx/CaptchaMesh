@@ -1,0 +1,3 @@
+name: CaptchaMesh
+description: 电脑 Agent 碰到 CAPTCHA 时，把挑战加密转给自己的手机。
+accent: "#22c55e"
